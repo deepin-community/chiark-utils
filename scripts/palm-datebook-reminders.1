@@ -1,0 +1,66 @@
+.\" Hey, Emacs!  This is an -*- nroff -*- source file.
+.TH PALM\-DATEBOOK\-REMINDERS 1 "12th January 2002" "Greenend" "chiark utilities"
+.SH NAME
+palm\-datebook\-reminders \- generate simple report from Palm Datebook DB
+.SH SYNOPSIS
+.BR PALM\-DATEBOOK\-REMINDERS " [\fIoptions\fP]
+.SH DESCRIPTION
+.B palm\-datebook\-reminders
+reads a Palm Datebook database and prints out a list of events in the
+near future in a reasonably easy to read format.
+.PP
+Immiment events (ones in approximately the next 48 hours by default)
+are listed with complete item text.  Forthcoming events (approximately
+the next 4 weeks by default) are listed in summary form.
+.SH OPTIONS
+.TP
+.IR imminent \fB/\fR forthcoming " | " \fB-t\fR imminent \fB/\fR forthcoming
+Specifies that imminent and forthcoming events are ones within the next
+.I immiment
+and
+.I forthcoming
+seconds, respectively.
+.TP
+.IR filename " | \fB-f\fR" filename
+Reads the file
+.I filename
+instead of
+.BR ./DatebookDB.pdb .
+If the bare form is used,
+.I filename
+must start with a
+.B .
+or
+.B /
+(dot or slash).
+.SH BUGS
+The program is not configurable enough.
+
+The option parsing is very grotty.
+
+Proper character set conversion is not performed.
+.SH FILES
+.TP
+.BR DatebookDB.pdb
+Default input file.
+.SH AUTHOR
+.B PALM\-DATEBOOK\-REMINDERS
+and this manpage were written by Ian Jackson
+<ian@chiark.greenend.org.uk>.  They are Copyright 2003 Ian Jackson.
+
+palm\-datebook\-reminders and this manpage are free software; you can
+redistribute it and/or modify it under the terms of the GNU General
+Public License as published by the Free Software Foundation; either
+version 2, or (at your option) any later version.
+
+This is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
+details.
+
+You should have received a copy of the GNU General Public License along
+with this program; if not, consult the Free Software Foundation's
+website at www.fsf.org, or the GNU Project website at www.gnu.org.
+
+Palm Datebook is a piece of proprietary software supplied with Palm
+organisers.  Palm and Datebook are probably trademarks.

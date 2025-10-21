@@ -1,0 +1,151 @@
+#!/usr/bin/perl
+# increm
+# Do an incremental backup; ONLY for invocation by full !
+#
+# This file is part of chiark backup, a system for backing up GNU/Linux and
+# other UN*X-compatible machines, as used on chiark.greenend.org.uk.
+#
+# chiark backup is:
+#  Copyright (C) 1997-1998,2000-2001,2007
+#                     Ian Jackson <ian@chiark.greenend.org.uk>
+#  Copyright (C) 1999 Peter Maydell <pmaydell@chiark.greenend.org.uk>
+#
+# This is free software; you can redistribute it and/or modify it under the
+# terms of the GNU General Public License as published by the Free Software
+# Foundation; either version 3, or (at your option) any later version.
+#
+# This is distributed in the hope that it will be useful, but WITHOUT ANY
+# WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+# FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
+# details.
+#
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, consult the Free Software Foundation's
+# website at www.fsf.org, or the GNU Project website at www.gnu.org.
+
+# We are invoked by full if the tape description file says that it is
+# for an incremental backup.  We expect two commandline argument which
+# is the ID string of the tape to use, and the description (which
+# includes ID and function).
+
+BEGIN {
+    $etc= '/etc/chiark-backup';
+    require "$etc/settings.pl";
+    require 'backuplib.pl';
+}
+
+$|=1;
+
+@ARGV==2 or die;
+($tapeid,$tapedesc)= @ARGV;
+
+print "Running incremental onto $tapedesc ...\n" or die $!;
+
+# Just check that we weren't passed a bogus ID (the tape description
+# file for incrementals is just 'incremental\nend\n')
+open T,"$etc/tape.$tapeid" or die "Tape $tapeid not found: $!\n";
+close T;
+
+# This is only used for the 'next FULL backup is X' message at the end.
+open NF,"next-full" or die $!;
+chomp($next= <NF>);
+close NF or die $!;
+
+setstatus "FAILED during incremental";
+
+# Read the number of the incremental involved
+# (ie, (how many files are already on the tape) - 1)
+open A,"increm-advance" or die $!;
+chomp($advance= <A>);
+close A or die $!;
+
+# better be a decimal number
+$advance =~ m/^\d+$/ or die "$advance ?";
+
+# Get a list of all filesystems
+readfsys('all');
+openlog();
+
+# Rewind the tape and if we are the first incremental on the tape then
+# write the TAPEID record, otherwise skip forward to the correct point.
+# (full will already have checked that this is the right tape before
+# it invoked us, so no need to read the existing TAPEID record first.)
+runsystem("mt -f $ntape rewind");
+if ($advance == 1) {
+    writetapeid($tapeid,$tapedesc);
+} else {
+    runsystem("mt -f $ntape fsf $advance");
+    $currenttapefilenumber= $advance;
+}
+
+sub closepipes () {
+    close(DUMPOR); close(BUFOR);
+    close(DUMPOW); close(BUFOW);
+    close(GZOR); close(GZOW);
+}
+
+setstatus "PROBLEMS during incremental dump";
+
+for $tf (@fsys) {
+
+    parsefsys();
+    prepfsys();
+    
+    $bufir='DUMPOR';
+    $ddcmd= "$nasty dd ibs=$softblocksizebytes obs=$blocksizebytes of=$ntape";
+
+    pipe(DUMPOR,DUMPOW) or die $!;
+    pipe(BUFOR,BUFOW) or die $!;
+
+    $gz= $gzi if length $gzi;
+    if ($gz) {
+	$bufir='GZOR';
+	pipe(GZOR,GZOW) or die $!;
+	$ddcmd .= " conv=sync";
+    }
+
+    if ($dopt{'noinc'}) {
+	pboth("Incrementals of $atf_print ($prefix) suppressed in config.\n");
+    }
+
+    if ($tm eq 'dump') {
+	$dumplabel= $pcstr.$atf_print.'$';
+	$dumpcmd= "dump 1Lbfu $dumplabel $softblocksizekb - $atf";
+    } elsif ($tm eq 'gtar') {
+	$dumpcmd= "tar NCcfl $fsidfile $atf - .";
+    } else {
+	pboth("Not dumping $atf_print ($prefix) - not supported.\n");
+	next;
+    }
+
+    nexttapefile("inc $prefix:$atf_print");
+    
+    # Same trick as full uses to do a pipeline whilst keeping track
+    # of all exit statuses:
+    #   dump </dev/null | writebuffer | dd >/dev/null
+    startprocess '</dev/null','>&DUMPOW',"$nice ".$rstr.$dumpcmd;
+    if ($gz) {
+	startprocess '<&DUMPOR','>&GZOW',"$nice gzip -v$gz";
+    }
+    startprocess "<&$bufir",'>&BUFOW',"$nasty writebuffer";
+    startprocess '<&BUFOR','>/dev/null',"$nasty $ddcmd";
+    closepipes();
+    endprocesses();
+    # advance is a file counter, so it needs to be updated for each 
+    # dump we do to tape.
+    $advance++;
+
+    finfsys();
+}
+
+# Rewind the tape, and increment the counter of incremental backups.
+runsystem("mt -f $tape rewind");
+open IAN,">increm-advance.new" or die $!;
+print IAN "$advance\n" or die $!;
+close IAN or die $!;
+rename 'increm-advance.new','increm-advance' or die $!;
+
+pboth("Next FULL dump tape is $next\n");
+
+setstatus "INCREMENTAL successful: $tapedesc, next full is $next";
+exit 0;

@@ -1,0 +1,95 @@
+#!/usr/bin/perl
+
+# Originally by Simon Tatham
+# Modified by Richard Kettlewell, Colin Watson, Ian Jackson
+#
+# Copyright -2011 Simon Tatham
+# Copyright 2011 Richard Kettlewell
+# Copyright 2011 Colin Watson
+# Copyright 2011 Ian Jackson
+#
+# Permission is hereby granted, free of charge, to any person obtaining a
+# copy of this software and associated documentation files (the "Software"),
+# to deal in the Software without restriction, including without limitation
+# the rights to use, copy, modify, merge, publish, distribute, sublicense,
+# and/or sell copies of the Software, and to permit persons to whom the
+# Software is furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+# 
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+# SOFTWARE IN THE PUBLIC INTEREST, INC. BE LIABLE FOR ANY CLAIM, DAMAGES OR
+# OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+# ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+# DEALINGS IN THE SOFTWARE.
+
+use Chiark::NNTP;
+
+our $verbose;
+($verbose='STDERR', shift @ARGV) if $ARGV[0] eq "-v";
+
+my $c = cnntp_connect($verbose);
+$c->banner_reader();
+
+our $code;
+
+# some servers require a GROUP before an ARTICLE command
+$c->docmd("GROUP misc.misc");
+
+if(@ARGV == 0) {
+  while(<>) {
+    s/(^\s+|\s+$)//gs;
+    lookup($_);
+  }
+} else {
+  while (@ARGV) {
+    my $item = shift @ARGV;
+    if($item !~ /[\@:]/ and not defined $group) {
+      # maybe a bare group followed by an article number
+      die unless @ARGV;
+      my $number = shift @ARGV;
+      $item = "$item $number";
+    }
+    lookup($item);
+  }
+}
+
+$c->docmd("QUIT");
+close S;
+
+sub lookup {
+  my $mid = shift;
+
+  if($mid !~ /\@/ and $mid =~ /^(.*)[: ](\d+)$/) {
+      my ($g, $n) = ($1, $2);
+      $c->docmd("GROUP $g");
+      $c->docmd("ARTICLE $n");
+  } else {
+      $mid =~ s/.*\<//;
+      $mid =~ s/\>.*//;
+      $c->docmd("ARTICLE <$mid>");
+  }
+
+  my $fh= 'STDOUT';
+  if (-t $fh) {
+    my $lesscmd= $ENV{'NNTPID_PAGER'};
+    $lesscmd= 'less' unless defined $lesscmd;
+    open LESS, "|-", 'sh','-c',$lesscmd or die $!;
+    $fh= 'LESS';
+  }
+  
+  while (1) {
+    ($code,$_) = $c->getline();
+    s/[\r\n]//g;
+    last if /^\.$/;
+    s/^\.//;
+    print $fh "$_\n";
+  }
+
+  if ($fh ne 'STDOUT') {
+    close $fh or die "$? $!";
+  }
+}

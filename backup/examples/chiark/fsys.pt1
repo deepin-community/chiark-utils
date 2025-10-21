@@ -1,0 +1,4 @@
+/u2			dump
+/usr			dump
+/var/spool/news/chiark	cpio
+end

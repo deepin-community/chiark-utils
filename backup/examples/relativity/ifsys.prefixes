@@ -1,0 +1,9 @@
+prefix davenant ssh -o 'BatchMode yes' -c blowfish -o 'Compression yes' davenant 'PATH=/usr/local/sbin:/usr/local/bin:/sbin:/usr/sbin:$PATH'
+prefix xenophobe ssh -o 'BatchMode yes' -c blowfish -o 'Compression no' xenophobe 'PATH=/usr/local/sbin:/usr/local/bin:/sbin:/usr/sbin:$PATH'
+
+prefix khem ssh -o 'BatchMode yes' -c blowfish -o 'Compression yes' -o 'CompressionLevel 1' khem 'PATH=/usr/local/sbin:/usr/local/bin:/sbin:/usr/sbin:$PATH'
+
+prefix kadath ssh -o 'BatchMode yes' -c blowfish -o 'Compression yes' -o 'CompressionLevel 1' kadath -l ian 'PATH=/usr/local/sbin:/usr/local/bin:/sbin:/usr/sbin:$PATH really'
+prefix-df kadath /bin/df -t noprocfs,nfs
+
+end

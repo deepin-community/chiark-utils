@@ -1,0 +1,53 @@
+#!/bin/bash
+
+set -e
+
+usage () { echo >&2 'usage: cvs-adjustroot OLD NEW'; exit 1; }
+
+case "$#.$1" in
+4.--reinvoke)	reinvoke=true; shift	;;
+*.-*)		usage			;;
+2.*)		reinvoke=false		;;
+1.*)		usage			;;
+0.*)		usage			;;
+*)		usage			;;
+esac
+
+# Copyright 2004 Ian Jackson <ian@chiark.greenend.org.uk>
+#
+# This script and its documentation (if any) are free software; you
+# can redistribute it and/or modify them under the terms of the GNU
+# General Public License as published by the Free Software Foundation;
+# either version 3, or (at your option) any later version.
+# 
+# chiark-named-conf and its manpage are distributed in the hope that
+# it will be useful, but WITHOUT ANY WARRANTY; without even the
+# implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR
+# PURPOSE.  See the GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, consult the Free Software Foundation's
+# website at www.fsf.org, or the GNU Project website at www.gnu.org.
+
+
+old="$1"; shift
+new="$1"; shift
+
+if $reinvoke; then
+	filename="$1";
+	if cmp -- "$filename" <(printf "%s\n" "$new"); then exit 0; fi
+	cmp -- "$filename" <(printf "%s\n" "$old")
+	printf "%s\n" "$new" >"$filename".new
+	mv -f -- "$filename".new "$filename"
+	exit 0
+fi
+
+# GNU find provides + exec variants which set exit status and pass
+# multiple arguments, or \; variants which pass one argument but do
+# not set exit status.  So use a separate -exec false + to arrange for
+# nonzero exit status when appropriate.
+
+find	-path '*/CVS/Root'						\
+  \(	-exec "$0" --reinvoke "$old" "$new" '{}' ';'			\
+  -o	-exec false '{}' +						\
+  \)

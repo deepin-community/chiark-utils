@@ -1,0 +1,32 @@
+#!/bin/sh
+
+set -e
+
+removes () {
+	if test -L "$vardir/snap-mount"; then
+		rm -f -- "$vardir/snap-mount"
+	elif test -d "$vardir/snap-mount"; then
+		rmdir -- "$vardir/snap-mount"
+	fi
+	rm -f -- "$vardir/snap-device"
+}
+
+vardir="$2"
+
+case "$#.$1" in
+2.drop)
+	removes
+	;;
+4.snap)
+	removes
+	ln -s -- "$3" "$vardir/snap-device"
+	ln -s -- "$4" "$vardir/snap-mount"
+	;;
+*)
+	cat >&2 <<'END'
+usage: .../nosnap snap VARDIR DEV MOUNT
+       .../nosnap drop VARDIR
+END
+	exit 1
+	;;
+esac

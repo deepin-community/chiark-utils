@@ -1,0 +1,311 @@
+#!/usr/bin/tclsh8.6
+set comment {
+#
+Use of the screen:
+0         1         2         3         4         5         6         7
+xxxE hh hh hh hh  hh hh hh hh  hh hh hh hh  hh hh hh hh_| abcd e_.. .... ...._|
+}
+# Display:
+#	| is a vertical delimiter
+#       E is either | to mean echo is on or ' to mean it is off
+#	hh are hex digits of output:
+#		00-ff	actual hex data (bold for stuff we entered)
+#		0-f	under cursor: one digit entered, need the next
+#	abcde_.... are ASCII output:
+#		.	things we can't print including SPC and _
+#	in both, we may see
+#			space we haven't yet filled
+#		_	cursor when in other tab
+#       xxx     number of bytes read/written so far
+# Keystrokes:
+#	TAB	switch between hex and literal mode
+#	^C, ^D	quit
+#	^Z	suspend
+# Keystrokes in hex mode only:
+#	RET	move to a new line; if already at start of line,
+#                set count to 0
+#	DEL	clear any entered hex digit
+#	SPC	send 00
+#	'	toggle echo
+# nyi:
+#	G-Z	record last bytes we transmitted and store in memory
+#		 if we were halfway through a hex byte, first digit
+#		 is length of string to record
+#	g-z	play back memory
+
+
+# Copyright 2005 Ian Jackson <ian@chiark.greenend.org.uk>
+#
+# This script and its documentation (if any) are free software; you
+# can redistribute it and/or modify them under the terms of the GNU
+# General Public License as published by the Free Software Foundation;
+# either version 3, or (at your option) any later version.
+# 
+# chiark-named-conf and its manpage are distributed in the hope that
+# it will be useful, but WITHOUT ANY WARRANTY; without even the
+# implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR
+# PURPOSE.  See the GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, consult the Free Software Foundation's
+# website at www.fsf.org, or the GNU Project website at www.gnu.org.
+
+
+if {[llength $argv] != 1} { error "need serial port arg" }
+
+set port [lindex $argv 0]
+
+set count 0
+set lit 0 ;# 1 means literal (ASCII) entry mode
+set echo 1
+
+proc p {s} {
+    puts -nonewline $s
+}
+
+proc tput {args} {
+    global tput
+    if {[catch { set s $tput($args) }]} {
+	set s [eval exec tput $args]
+	set tput($args) $s
+    }
+    p $s
+}
+
+proc csr_pos {lit bytenum} {
+    set x [expr {
+	(!$lit ? (3*$bytenum) : 53+$bytenum)
+	+ ($bytenum>>2) - (2-$lit)*($bytenum==16)
+	+ 5
+    }]
+    tput hpa $x
+}
+
+proc csr_this {} { global lit x; csr_pos $lit $x }
+proc csr_other {} { global lit x; csr_pos [expr {!$lit}] $x }
+proc csrs_erase {} { csr_this; p " "; csr_other; p " " }
+proc csr_this_show {} {
+    global h1
+    csr_this; if {[info exists h1]} { p $h1; p "\b" }
+}
+proc csrs_show {} {
+    csr_other; p _
+    csr_this_show
+}
+
+proc echop {} {
+    global echo
+    return [expr {$echo ? "|" : "'"}]
+}
+
+proc newline {} {
+    global x echo count
+    if {[info exists x]} { csrs_erase; p "\r\n" }
+    set x 0
+    p [format "%3x%s%*s|%*s|" $count [echop] 52 "" 21 ""]
+    csrs_show
+}
+
+proc p_ch_spaces {} {
+    global x lit
+    if {$x==15} return
+    if {$lit} { p " " }
+    if {($x & 3) != 3} return
+    p " "
+}
+
+proc p_rmso {smso} {
+    if {[string length $smso]} { tput sgr0 }
+}
+
+proc ch {d smso} {
+    global lit x count
+    if {$x == 16} newline
+    if {[string length $smso]} { tput $smso }
+    set h [format %02x [expr {$d & 0xff}]]
+    set c [format %c [expr {($d > 33 && $d < 127 && $d != 95) ? $d : 46}]]
+    if {$lit} {
+	p $c; csr_other; p $h
+	p_ch_spaces
+	p_rmso $smso
+	p _
+    } else {
+	p $h; csr_other; p $c
+	p_ch_spaces
+	p_rmso $smso
+	p _
+    }
+    incr x
+    set count [expr {($count+1) & 0xfff}]
+    csr_this_show
+}
+
+proc onreadp {} {
+    global p
+    while 1 {
+	set c [read $p 1]
+	binary scan $c c* d
+	if {![llength $d]} {
+	    if {[eof $p]} { error "eof on device" }
+	    return
+	}
+	ch $d {}
+    }
+}
+
+proc transmit {d} {
+    global p echo
+    puts -nonewline $p [format %c $d]
+    if {$echo} { ch $d bold }
+}
+
+proc k_echo {} {
+    global echo
+    set echo [expr {!$echo}]
+    tput hpa 3
+    p [echop]
+    csr_this
+}
+
+proc k_newline {} {
+    global count x
+    if {$x} {
+	newline
+    } else {
+	set count 0
+	p "\r"
+	p [format %3x $count]
+	csr_this
+    }
+}
+
+proc k_switch {} {
+    global lit h1
+    csrs_erase
+    catch { unset h1 }
+    set lit [expr {!$lit}]
+    csrs_show
+}
+
+proc k_stop {} {
+    restore
+    exit 0
+}
+
+proc k_suspend {} {
+    restore
+    exec kill -TSTP [info pid]
+    setup
+}
+
+proc k_noparthex {} {
+    global h1
+    csrs_erase
+    catch { unset h1 }
+    csrs_show
+}
+
+proc k_hexdigit {c} {
+    global h1 echo
+    if {![info exists h1]} { set h1 $c; p $c; p "\b"; return }
+    set d [expr 0x${h1}${c}]
+    unset h1
+    transmit $d
+    if {!$echo} { p " \b" }
+}
+
+proc onreadk {} {
+    global lit
+    while 1 {
+	set c [read stdin 1]
+	binary scan $c c* d
+	if {![llength $d]} {
+	    if {[eof stdin]} { error "eof on stdin" }
+	    return
+	}
+	switch -exact $d {
+	    9 { k_switch; continue }
+	    3 - 4 { k_stop; continue }
+	    26 { k_suspend; continue }
+	}
+	if {$lit} { transmit $d; continue }
+	switch -exact $d {
+	    13 { k_newline; continue }
+	    32 { transmit 0; continue }
+	    39 { k_echo; continue }
+	    127 { k_noparthex; continue }
+	}
+	if {$d >= 48 && $d <= 57} { k_hexdigit $c; continue }
+	set kl [expr {$d | 32}]
+	if {$d >= 97 && $d <= 102} { k_hexdigit $c; continue }
+	p "\a"
+    }
+}
+
+proc try {script} {
+    if {[catch { uplevel 1 $script } emsg]} {
+	catch { puts stderr "(warning: $emsg)" }
+    }
+}
+
+proc tryv {variable script} {
+    upvar #0 $variable var
+    if {![info exists var]} return
+    uplevel 1 "
+        global $variable
+        $script
+    "
+    unset var
+}
+
+proc restore {} {
+    tryv x { puts "\r\n" }
+    try { fconfigure stdin -blocking true }
+    try { fconfigure stdout -blocking true }
+    tryv term_stty { exec stty $term_stty }
+    tryv p { close $p }
+}
+
+proc setup {} {
+    global term_stty port p
+
+    set term_stty [exec stty -g]
+
+    set p [open $port {RDWR NONBLOCK} 0]
+    
+    exec stty          min 1 time 0 -istrip -ocrnl -onlcr -onocr -opost \
+	               -ctlecho -echo -echoe -echok -echonl -iexten -isig \
+		       -icanon -icrnl
+    exec stty -F $port min 1 time 0 -istrip -ocrnl -onlcr -onocr -opost \
+	               -ctlecho -echo -echoe -echok -echonl -iexten -isig \
+		       -icanon -icrnl \
+	    9600 clocal cread -crtscts -hup -parenb cs8 -cstopb \
+	    -ixoff bs0 cr0 ff0 nl0 -ofill -olcuc
+
+    fconfigure $p -blocking false -buffering none -encoding binary \
+	    -translation binary
+
+    fconfigure stdin -blocking false -buffering none -translation binary
+    fconfigure stdout -blocking false -buffering none -translation binary
+
+    newline
+
+    fileevent stdin readable onreadk
+    fileevent $p readable onreadp
+}
+
+proc bgerror {m} {
+    try {
+	restore
+	global errorInfo errorCode
+	puts stderr "$m\n$errorCode\n$errorInfo"
+    }
+    exit 127
+}
+
+if {[catch setup emsg]} {
+    restore
+    error $emsg $errorInfo $errorCode
+}
+
+vwait quit

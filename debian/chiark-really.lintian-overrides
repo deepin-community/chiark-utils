@@ -1,0 +1,2 @@
+# This is the point of this binary package.
+setuid-binary usr/sbin/really 4754 root/root

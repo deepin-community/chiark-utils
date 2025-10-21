@@ -1,0 +1,13 @@
+/usr/src		dump	davenant
+
+/var			dump	davenant
+/u			dump	davenant
+
+/			dump	davenant
+
+/export/mirror/work	cpio	davenant
+
+/usr			dump	davenant
+/boot			dump	davenant
+
+end

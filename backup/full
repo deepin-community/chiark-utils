@@ -1,0 +1,337 @@
+#!/usr/bin/perl
+# full
+# Main backup script - does a full dump or execs increm.  Do NOT run directly!
+#
+# This file is part of chiark backup, a system for backing up GNU/Linux and
+# other UN*X-compatible machines, as used on chiark.greenend.org.uk.
+#
+# chiark backup is:
+#  Copyright (C) 1997-1998,2000-2001,2007
+#                     Ian Jackson <ian@chiark.greenend.org.uk>
+#  Copyright (C) 1999 Peter Maydell <pmaydell@chiark.greenend.org.uk>
+#
+# This is free software; you can redistribute it and/or modify it under the
+# terms of the GNU General Public License as published by the Free Software
+# Foundation; either version 3, or (at your option) any later version.
+#
+# This is distributed in the hope that it will be useful, but WITHOUT ANY
+# WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+# FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
+# details.
+#
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, consult the Free Software Foundation's
+# website at www.fsf.org, or the GNU Project website at www.gnu.org.
+
+BEGIN {
+    $etc= '/etc/chiark-backup';
+    require "$etc/settings.pl";
+    require 'backuplib.pl';
+}
+
+$|=1;
+
+while (@ARGV) {
+    $_= shift @ARGV;
+    if (m/^\-\-no\-reten$/) {
+	$noreten=1;
+    } elsif (m/^\-\-no\-config\-check$/) {
+	$nocheck=1;
+    } else {
+	die "unknown option/argument \`$_'\n";
+    }
+}
+
+# Check to see whether the tape.nn and fsys.nn files are sane.
+# checkallused checks that all the filesystems mounted are in fact
+# dumped in both full and incremental dumps.
+
+openlog();
+
+if (!$nocheck) {
+    setstatus "FAILED configuration check";
+    print "Configuration check ...\n" or die $!;
+    system 'backup-checkallused'; $? and die $?;
+} else {
+    setstatus "FAILED rewinding";
+    rewind_raw();
+}
+
+printdate();
+
+setstatus "FAILED reading TAPEID";
+# Try to read the tape ID from the tape into the file TAPEID
+
+readtapeid_raw();
+
+setstatus "FAILED during startup";
+
+# We need some ID; if the tape has one already that takes precedence;
+# otherwise the user might have set a tape ID that this should be
+# by creating really-TAPEID.
+if (open T, "TAPEID") {
+    unlink 'really-TAPEID';
+} elsif (open T, "really-TAPEID") {
+} else {
+    die "No TAPEID.\n";
+}
+
+# read the ID; it had better be a non-empty string of alphanumeric chars.
+chomp($tapeid= <T>);
+$tapeid =~ m/[^0-9a-zA-Z]/ and die "Bad TAPEID ($&).\n";
+$tapeid =~ m/[0-9a-zA-Z]/ or die "Empty TAPEID.\n";
+close T;
+
+setstatus "FAILED at tape identity check";
+
+# We don't let the user overwrite the tape used for the last backup.
+if (open L, "last-tape") {
+    chomp($lasttape= <L>);
+    close L;
+} else {
+    undef $lasttape;
+}
+
+die "Tape $tapeid same as last time.\n" if $tapeid eq $lasttape;
+
+# $tapeid identifies the individual tape; $tapedesc is its current
+# identity and function, for printing in messages.  You can make these
+# namespaces the same if you like, or you can make the tape.<tapeid>
+# files be links to tape.<tapedesc> files.
+if (defined($tapedesc= readlink "$etc/tape.$tapeid")) {
+    $tapedesc =~ s/^.*\.//;
+    $tapedesc .= "($tapeid)";
+} else {
+    $tapedesc = $tapeid;
+}
+
+# Parse the appropriate tape.nn file.
+# Format is: empty lines and lines starting '#' are ignored. Trailing
+# whitespace is ignored. File must end with 'end' on a line by itself.
+# Either there should be a line 'incremental' to indicate that this is
+# a tape for incremental backups, or a pair of lines 'filesystems fsg'
+# and 'next tapeid', indicating that this tape is part of a full 
+# backup, containing the filesystem group fsg. 
+undef $fsys;
+open D, "$etc/tape.$tapeid" or die "Unknown tape $tapeid ($!).\n";
+for (;;) {
+    $_= <D> or die; chomp; s/\s+$//;
+    last if m/^end$/;
+    next unless m/\S/;
+    next if m/^\#/;
+    if (m/^filesystems (\w+)$/) {
+	$fsys= $1;
+    } elsif (m/^next (\w+)$/) {
+	$next= $1;
+    } elsif (m/^incremental$/) {
+	$incremental= 1;
+    } else {
+	die "unknown entry in tape $tapeid at line $.: $_\n";
+    }
+}
+close D or die $!;
+
+# Incremental backups are handled by increm, not us.
+if ($incremental) {
+    die "incremental tape $tapeid has next or filesystems\n"
+	if defined($next) || defined($fsys);
+    print STDERR "Incremental tape $tapeid.\n\n";
+    setstatus "FAILED during incremental startup";
+    exec "increm",$tapeid,$tapedesc;
+    die $!;
+}
+
+# Read the filesystem group definition (file fsys.nnn)
+readfsys("$fsys");
+
+$doing= "dump of $fsys to tape $tapedesc in drive $tape";
+print LOG "$doing:\n" or die $!;
+
+if (!$noreten) {
+    setstatus "FAILED retensioning";
+    runsystem("mt -f $tape reten");
+}
+
+setstatus "FAILED writing tape ID";
+# First write the tape ID to this tape.
+
+writetapeid($tapeid,$tapedesc);
+
+unlink 'this-md5sums';
+
+print "Doing $doing ...\n" or die $!;
+
+unlink 'p';
+system 'mknod -m600 p p'; $? and die $?;
+
+setstatus "FAILED during dump";
+
+sub closepipes () {
+    close(DUMPOR); close(TEEOR); close(BUFOR); close(FINDOR);
+    close(DUMPOW); close(TEEOW); close(BUFOW); close(FINDOW);
+    close(GZOR); close(GZOW);
+    close(DDERRR); close(DDERRW);
+}
+
+# work out a find option string that will exclude the required files    
+# Note that dump pays no attention to exclude options.
+$exclopt = '';
+foreach $exc (@excldir) {
+    $exclopt .= "-regex $exc -prune -o ";
+}
+foreach $exc (@excl) {
+    $exclopt .= "-regex $exc -o ";
+}
+
+# For each filesystem to be put on this tape:
+for $tf (@fsys) {
+    printdate();
+    parsefsys();
+    prepfsys();
+
+    pipe(FINDOR,FINDOW) or die $!;
+    pipe(DUMPOR,DUMPOW) or die $!;
+    pipe(TEEOR,TEEOW) or die $!;
+    pipe(TEEOR,TEEOW) or die $!;
+    pipe(BUFOR,BUFOW) or die $!;
+    pipe(DDERRR,DDERRW) or die $!;
+    
+    $bufir='TEEOR';
+    $ddcmd= "dd ibs=$softblocksizebytes obs=$blocksizebytes of=$ntape 2>&1";
+
+    if ($gz) {
+	$bufir='GZOR';
+	pipe(GZOR,GZOW) or die $!;
+	$ddcmd .= " conv=sync";
+    }
+    
+    nexttapefile("full $prefix:$atf_print");
+
+    # We can back up via dump or cpio or zafio
+    $dumpin= '</dev/null';
+    if ($tm eq 'dump') {
+	$dumplabel= $pcstr.$atf_print.'$';
+	$dumpcmd= "dump 0Lbfu $dumplabel $softblocksizekb - $atf";
+    } elsif ($tm eq 'cpio') {
+	startprocess '</dev/null','>&FINDOW',$rstr."find $atf -xdev -noleaf -print0";
+	$dumpcmd= "cpio -Hustar -o0C$softblocksizebytes";
+	$dumpin= '<&FINDOR';
+    } elsif ($tm eq 'zafio') {
+        # compress-each-file-then-archive using afio
+        startprocess '</dev/null','>&FINDOW',$rstr."find $atf -xdev -noleaf $exclopt -print";
+        # don't use verbose flag as this generates 2MB report emails :->
+        $dumpcmd = "afio -b $softblocksizebytes -Zo -";
+        $dumpin = '<&FINDOR';
+    } elsif ($tm eq 'ntfsimage') {
+	$dumpcmd= "ntfsimage -svvf --dirty $dev";
+    } elsif ($tm eq 'gtar') {
+	execute("$rstr touch $fsidfile+new");
+	$dumpcmd= "tar Ccfl $atf - .";
+    } else {
+	die "unknown method $tm for $prefix:$atf_print\n";
+    }
+    # This is a funky way of doing a pipeline which pays attention
+    # to the exit status of all the commands in the pipeline.
+    # It is roughly equivalent to:
+    #    md5sum <p >>this-md5sums
+    #    dump <$dumpin | tee p [| gzip] | writebuffer | dd >/dev/null
+
+    startprocess '<p','>>this-md5sums',"$nice md5sum";
+    startprocess $dumpin,'>&DUMPOW',"$nice ".$rstr.$dumpcmd;
+    startprocess '<&DUMPOR','>&TEEOW',"$nice tee p";
+    if ($gz) {
+	startprocess '<&TEEOR','>&GZOW',"$nice gzip -v$gz";
+    }
+    startprocess "<&$bufir",'>&BUFOW',"$nasty writebuffer";
+    startprocess '<&DDERRR','>/dev/null',"$nice tee dderr >&2";
+    startprocess '<&BUFOR','>&DDERRW',"$nasty $ddcmd";
+    closepipes();
+    endprocesses();
+
+    open DDERR, "dderr" or die $!;
+    defined(read DDERR,$_,1023) or die $!;
+    close DDERR;
+    m/\n(\d+)\+0 records out\n/ or die ">$dderr< ?";
+    push @tapefilesizes, [ $1, $currenttapefilename ];
+    $totalrecords += $1;
+    pboth("total blocks written so far: $totalrecords\n");
+
+    if ($tm eq 'gtar') {
+	execute("$rstr mv -f $fsidfile+new $fsidfile");
+    }	
+    
+    finfsys();
+}
+
+# The backup should now be complete; verify it
+
+setstatus "FAILED during check";
+
+# Rewind the tape and skip the TAPEID record
+runsystem("mt -f $tape rewind");
+runsystem("mt -f $ntape fsf 1");
+
+# Check the md5sums match for each filesystem on the tape
+open S,"this-md5sums" or die $!;
+for $tf (@fsys) {
+    printdate();
+    parsefsys();
+    chomp($orgsum= <S>); $orgsum =~ s/\ +\-?$//;
+    $orgsum =~ m/^[0-9a-fA-F]{32}$/i or die "orgsum \`$orgsum' ?";
+    $cmd= "$nasty dd if=$ntape ibs=$blocksizebytes";
+    $cmd .= " | $nasty readbuffer";
+    $cmd .= " | $nice gzip -vd" if $gz;
+    $cmd .= " | $nice md5sum";
+    pboth("  $cmd\n");
+    chomp($csum= `$cmd`);
+    $csum =~ s/\ +\-?$//;
+    $orgsum eq $csum or die "MISMATCH $tf $csum $orgsum\n";
+    print "checksum ok $csum\t$tf\n" or die $!;
+    print LOG "checksum ok $csum\t$tf\n" or die $!;
+}
+printdate();
+runsystem("mt -f $tape rewind");
+
+setstatus "FAILED during cleanup";
+
+$summary= '';
+foreach $tfs (@tapefilesizes) {
+    $summary .= sprintf "    %10d blocks for %s\n", $tfs->[0], $tfs->[1]
+}
+$summary .=
+    sprintf "    %10d blocks total (of %d bytes) plus TAPEID and headers\n",
+    $totalrecords, $blocksizebytes;
+
+pboth("size-summary:\n");
+pboth($summary);
+
+open SS, ">size-summary..new" or die $!;
+print SS $summary or die $!;
+close SS or die $!;
+rename 'size-summary..new',"size-summary.$fsys" or die $!;
+
+# Write to some status files to indicate what the backup system
+# ought to do when next invoked.
+# reset incremental backup count to 1.
+open IAN,">increm-advance.new" or die $!;
+print IAN "1\n" or die $!;
+close IAN or die $!;
+
+# Next full backup is whatever the next link in the tape description
+# file says it ought to be.
+open TN,">next-full.new" or die $!;
+print TN "$next\n" or die $!;
+close TN or die $!;
+
+unlink 'last-tape','next-full';
+# We are the last tape to have been backed up
+rename 'TAPEID','last-tape' or die $!;
+rename 'this-md5sums',"md5sums.$fsys" or die $!;
+rename 'log',"log.$fsys" or die $!;
+rename 'next-full.new',"next-full" or die $!;
+rename 'increm-advance.new',"increm-advance" or die $!;
+
+print "$doing completed.\nNext dump tape is $next.\n" or die $!;
+
+setstatus "Successful: $tapedesc $fsys, next $next";
+exit 0;

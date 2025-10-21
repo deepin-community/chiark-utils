@@ -1,0 +1,97 @@
+# sourced by snap/lvm and snap/remountrocp
+
+#---------- common arg parsing
+
+nargs=$#
+opmode="$1"
+vardir="$2"
+device="$3"
+mountpoint="$4"
+
+lvm_lv=chiark-backup
+lvm_lvtools_opts='-A n'
+lvm_lvcreate_opts=
+lvm_lvcreate_args=
+
+test ! -f /etc/chiark-backup/settings.sh || . /etc/chiark-backup/settings.sh
+
+case "$nargs.$opmode" in
+4.snap|2.drop)
+	;;
+*)
+	cat >&2 <<END
+usage: .../$snapkind snap VARDIR DEV MOUNT
+       .../$snapkind drop VARDIR
+END
+	exit 1
+	;;
+esac
+
+#---------- common functions
+
+lvmunmapperdevice () {
+	# turns device=/dev/mapper/... into /dev/<group>/<volume>
+	case "$device" in
+	/dev/mapper/*)
+		device="`printf '%s' "$device" | perl -pe '
+			s,^/dev/mapper/,,;
+			die if m,/,;
+			s,\-\-,!,g;
+			s,\-,/,g;
+			s,\!,-,g;
+			s,^,/dev/,;
+		'`"
+		;;
+	esac
+}
+
+lvmdevice2vgroup () {
+	vgroup="${device#/dev/}"
+	vgroup="${vgroup%/*}"
+}
+
+daft_sleep () {
+	sleep 5
+}
+
+lvmdropcore () {
+	snmnt="$vardir/snap-mount"
+	daft_sleep
+	umount -v "$snmnt" || true
+	daft_sleep
+	test ! -d "$snmnt" || rmdir -- "$snmnt" || rm -f "$snmnt"
+	daft_sleep
+
+	set +e
+	old_lv_dev="$(readlink $vardir/snap-device)"
+	rc=$?
+	set -e
+
+	if [ $rc = 0 ]; then
+		set +e
+		daft_sleep
+		lvremove -f $lvm_lvtools_opts      $old_lv_dev
+		daft_sleep
+		set -e
+		rm $vardir/snap-device
+	fi
+}
+
+lvmextentscore1 () {
+	# vgroup must be set
+	vgdisplay_out="$(really vgdisplay -c "$vgroup")"
+	extents="$(printf "%s" "$vgdisplay_out" | awk -F: '{print $16}')"
+	extsize="$(printf "%s" "$vgdisplay_out" | awk -F: '{print $13}')"
+}
+
+lvmextentscore2 () {
+	if [ $extents2 -lt $extents ]; then extents=$extents2; fi
+	lvm_lvsize_opts="-l $extents"
+}
+
+lvmcreatecore1 () {
+	# vgroup must be set
+	lvpath="/dev/$vgroup/$lvm_lv"
+	ln -s -- "$lvpath" "$vardir"/snap-device
+	sync
+}

@@ -1,0 +1,70 @@
+#!/bin/sh
+# takedown
+# Entry point for cron to take the system down for backups
+#
+# This file is part of chiark backup, a system for backing up GNU/Linux and
+# other UN*X-compatible machines, as used on chiark.greenend.org.uk.
+#
+# chiark backup is:
+#  Copyright (C) 1997-1998,2000-2001,2007
+#                     Ian Jackson <ian@chiark.greenend.org.uk>
+#  Copyright (C) 1999 Peter Maydell <pmaydell@chiark.greenend.org.uk>
+#
+# This is free software; you can redistribute it and/or modify it under the
+# terms of the GNU General Public License as published by the Free Software
+# Foundation; either version 3, or (at your option) any later version.
+#
+# This is distributed in the hope that it will be useful, but WITHOUT ANY
+# WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+# FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
+# details.
+#
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, consult the Free Software Foundation's
+# website at www.fsf.org, or the GNU Project website at www.gnu.org.
+
+# Expects a single (possibly empty) argument X which is used to select
+# a file /etc/chiark-backup/warnings.X. This file will contain lines like:
+# T 300 "in 10 minutes"
+# T 240 "in 5 minutes"
+# T 45 "in 1 minute"
+# T 15 "in 15 seconds"
+# configuring the frequency of warning messages. If you call the 
+# files 'warnings.soon', 'warnings.now' and 'warnings.' then
+# you can invoke this as:
+#   takedown                     lots of warnings
+#   takedown soon                not so many warnings
+#   takedown now                 no warning at all
+
+set -e
+cd /etc/chiark-backup
+
+host="`hostname`" || true
+
+T () {
+	(
+		exec wall <<END &
+ *** WARNING - SYSTEM GOING DOWN FOR BACKUPS ***
+ $host will shut down automatically $2.
+
+END
+	) &
+	sleep $1
+}
+
+. "warnings.$1"
+
+(
+	exec wall <<END &
+ *** WARNING - SYSTEM GOING DOWN FOR BACKUPS ***
+
+  $host is shutting down IMMEDIATELY.
+
+END
+) &
+sleep 1
+
+# We assume that runlevel 5 is set up suitably for doing backups
+# (ie non-essential services turned off in an effort to get the
+# tape to stream.)
+telinit 5

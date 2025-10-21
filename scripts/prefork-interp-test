@@ -1,0 +1,32 @@
+#!/usr/bin/prefork-interp -U,perl,-w
+# -*- perl -*-
+
+# Copyright 2022 Ian Jackson and contributors to chiark-utils
+# SPDX-License-Identifier: GPL-3.0-or-later
+# There is NO WARRANTY.
+
+use strict;
+use Proc::Prefork::Interp;
+
+sub prwhen ($) {
+  my ($when) = @_;
+  my @env = sort keys %ENV;
+  print STDERR "$when - STDERR - @ARGV - $ENV{PREFORK_INTERP} - @env\n"
+    and flush STDERR or die $!;
+  print STDOUT "$when - STDOUT\n"
+    and flush STDOUT or die $!;
+}
+
+prwhen('BEGIN');
+
+prefork_initialisation_complete();
+
+prwhen('AFTER');
+
+while (<STDIN>) {
+  last unless m{\S};
+  $_ = uc $_;
+  print or die $!;
+  flush STDOUT or die $!;
+  print STDERR length, "\n";
+}

@@ -1,0 +1,155 @@
+.\" Hey, Emacs!  This is an -*- nroff -*- source file.
+.TH SYNC\-ACCOUNTS 8 "14th July 2002" "Greenend" "chiark utilities"
+.SH NAME
+sync\-accounts \- synchronise accounts and passwords
+.SH SYNOPSIS
+.BR sync\-accounts " [\fIoptions\fP] [\fIsource\fP ...]"
+.SH DESCRIPTION
+.B sync-accounts
+is a tool for copying account information into the local system's
+password and group databases, or equivalent, from other systems.  It
+can be used to slave individual accounts, whole systems, or various
+partial combinations.
+
+By default, when invoked, sync-accounts reads is configuration file
+and updates all of the local details it is configured to synchronise,
+from all relevant sources.
+
+If one or more \fIsource\fPs are named as command-line arguments, only
+information from those sources is installed locally.
+
+See
+.BR sync-accounts(5)
+for detailed information about sync-accounts's behaviour and
+configuration.
+.SH OPTIONS
+.TP
+.BI \-C config\-file
+Reads
+.I config-file
+instead of
+.BR /etc/sync-accounts .
+.TP
+.BR \-q
+Instead of updating local information, sync-accounts displays a
+summary of which accounts are synchronised or not, and from where.
+.TP
+.BR \-n
+Causes sync-accounts not to actually install the new information in
+the local password and group databases.  Instead, updated versions are
+written to the files
+.B passwd
+and
+.B group
+in the current directory.  With
+.B \-n
+new accounts are not created at all.  The system databases are not
+locked.
+.SH SECURITY
+sync-accounts is not resistant to malicious data in the local
+password and group databases, or its configuration file or command
+line arguments.
+
+Malicious data in source information will not be able to take control
+of sync-accounts, but will be copied to the local databases if
+sync-accounts is configured to do so.
+
+To update the local databases, sync-accounts must be run as root.
+For \-q and \-n sync-accounts still needs to be able to successfuly
+invoke the commands specified in the configuration for getpasswd and
+getgroup.
+.SH EXIT STATUS
+.TP
+.B 0
+All went well and there were no warnings.
+.TP
+any other
+There were problems.  The local databases may or may not have been
+updated.
+.SH FILES
+.TP
+.B /etc/sync-accounts
+Default configuration file.  (Override with
+.BR -C .)
+.TP
+.B sync-accounts-createuser
+Default command invoked by sync-accounts to create local users.
+.TP
+.B /home
+Default location for created users' home directories.
+.TP
+.B /bin/sh
+Default shell for created users.
+.TP
+.BR /etc/passwd ", " /etc/group ", " /etc/shadow ", " /etc/master.passwd
+Local account databases, depending on configuration.
+.TP
+.BR /etc/shadow-non-existent
+Must not exist.
+.SH ENVIRONMENT
+.TP
+.BR EDITOR ", " VISUAL
+Manipulated by sync-\accounts when it is reinvoking itself via vipw or
+vigr, according to
+.B lockpasswd runvia
+or
+.BR "lockgroup runvia" .
+.TP
+.BR SYNC_ACCOUNTS_*
+Used by sync-accounts for its own purposes.  Do not set these
+variables.
+.LP
+Setting variables used by
+.BR vipw (8)
+and
+.BR vigr (8),
+apart from
+.BR EDITOR " and/or"  VISUAL
+will affect the operation of sync-accounts.  
+Avoid messing with these if possible.
+.LP
+.B PATH
+is used to find subprograms such as
+.BR sync-accounts-createuser " and " vipw / vigr .
+.SH BUGS
+Using sync-accounts does not give particularly prompt propagation of
+changed account information.
+
+There is no simple mechanism for automatically getting the right
+configuration details for accessing the local system's password and
+group databases.
+
+All the systems sharing account information using sync-accounts need
+to be using compatible encrypted-password schemes.
+.SH AUTHOR
+.B sync-accounts
+and this manpage are part of the
+.B sync-accounts
+package which was written by Ian Jackson <ian@chiark.greenend.org.uk>.
+They are Copyright 1999-2000,2002 Ian Jackson
+<ian@davenant.greenend.org.uk>, and Copyright 2000-2001 nCipher
+Corporation Ltd.
+
+The sync-accounts package is free software; you can redistribute it
+and/or modify it under the terms of the GNU General Public License as
+published by the Free Software Foundation; either version 3, or (at
+your option) any later version.
+
+This is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
+details.
+
+You should have received a copy of the GNU General Public License along
+with this program; if not, consult the Free Software Foundation's
+website at www.fsf.org, or the GNU Project website at www.gnu.org.
+.SH SEE ALSO
+.BR sync-accounts "(5), "
+.BR grab-account "(8), "
+.BR sync-accounts-createuser "(8), "
+.BR passwd "(5), "
+.BR group "(5), "
+.BR shadow "(5), "
+.BR master.passwd "(5), "
+.BR vipw "(8), "
+.BR vigr "(8)"

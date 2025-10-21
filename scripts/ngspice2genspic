@@ -1,0 +1,95 @@
+#!/usr/bin/perl
+#   ngspice2genspic - Copyright 2004 Ian Jackson - see below
+#
+# Reads the output from ngspice and outputs a `genspic' file
+# for use with genspic2gnuplot.  Takes no arguments or options.
+#
+# Limitations
+#
+#  Only frequency (.AC) and transient plots have been tested.
+#
+#  Displaying voltages and currents on the same .TRAN graph won't work
+#   well because they currently have to have the same Y scale.
+#
+#  This whole scheme is very clumsy.  There should be a driver program
+#  with command-line option parsing.
+
+# This program and its documentation are free software; you can
+# redistribute them and/or modify them under the terms of the GNU
+# General Public License as published by the Free Software Foundation;
+# either version 3, or (at your option) any later version.
+# 
+# This program and its documentation are distributed in the hope that
+# they will be useful, but WITHOUT ANY WARRANTY; without even the
+# implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR
+# PURPOSE.  See the GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, consult the Free Software Foundation's
+# website at www.fsf.org, or the GNU Project website at www.gnu.org.
+
+die if @ARGV;
+
+while (<STDIN>) {
+    if (m/^Total CPU/) {
+	die if $mode ne '';
+	$seentcpu=1;
+    } elsif (m/^Current dynamic memory/ ||
+	     m/^Dynamic memory limit/ ||
+	     m/^Level not specified/ ||
+	     m/^Doing analysis/ ||
+	     m/^CPU time since/ ||
+	     m/^Circuit\:/) {
+	die if length $mode;
+    } elsif (m/\f/) {
+	die if m/\S/;
+    } elsif (!m/\S/ && $mode eq InitTransSkip) {
+	$mode= '';
+    } elsif (m/^Initial Transient/ && $mode eq '') {
+	$mode= InitTrans;
+    } elsif (m/^Node/ && $mode eq InitTrans) {
+	$mode= InitTransSkip;
+    } elsif (m/\w/ && $mode eq InitTransSkip) {
+    } elsif (m/^\-\-/ && length $mode) {
+    } elsif (m/^\s\s+(\w+) Analysis /) {
+	if ($mode eq '') {
+	    $mode= Table;
+	    $ctable= $1;
+	    $dokey= 1;
+	} else {
+	    $dokey= 0;
+	}
+    } elsif (m/^\s\s+/ && ($mode eq Table or !length $mode)) {
+    } elsif (m/^Index / && $mode eq Table) {
+	s/\s+$//;
+	($index,$key,@nowheadings) = split /\s+/, $_;
+	$logxy= 0+($key eq 'frequency');
+    } elsif (m/^\d+\s/ && $mode eq Table) {
+	($index,$key,@nowcolumns) = split /\s+/, $_;
+	shift @nowcolumns if $key =~ s/\,$//;
+	$coldata[$index] .= " $key" if $dokey;
+	$coldata[$index] .= " @nowcolumns";
+	if (!$index) {
+	    foreach $c (@nowheadings) {
+		$h= 'y';
+		$h= 'y2' if $c =~ m/^ph\(/;
+		push @columns, "$h:$c";
+	    }
+	}
+    } elsif (!m/\S/ && $mode eq Table) {
+	print "S $ctable $logxy @columns\n" or die $!;
+	foreach $l (@coldata) { printf "D%s\n", $l or die $!; }
+	print "T\n" or die $!;
+	$mode= '';
+	@columns= ();
+	@coldata= ();
+    } elsif (!m/\S/) {
+	$mode= '' if $mode eq InitTransSkip;
+    } else {
+	die "$mode: $_ ?";
+    }
+}
+die "no plots" unless defined $ctable;
+print "F\n" or die $!;
+
+# $Id: ngspice2genspic,v 1.3 2007-09-21 21:21:15 ianmdlvl Exp $

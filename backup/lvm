@@ -1,0 +1,50 @@
+#!/bin/bash
+# invoked by backup scripts as
+#    lvm snap $vardir $device $mountpoint
+#		creates and mounts on $vardir/snap-mount
+#		creates $vardir/snap-device -> device
+#    lvm drop $vardir
+
+set -e
+snapkind=lvm
+. ${CHIARK_BACKUP_SHAREDIR:-/usr/share/chiark-backup}/snap-common
+
+#---------- clean up anything
+
+lvmdropcore
+
+if test "$opmode" = drop; then
+	echo 'lvm snap dropped'
+	exit 0
+fi
+
+#---------- create snapshot
+
+fstype="$(mount | sed -n \
+ "s,^$device on $mountpoint type \([a-z0-9][a-z0-9]*\) .*,-t \1 ,p")"
+
+lvmunmapperdevice
+lvmdevice2vgroup
+
+if [ -z "$lvm_lvsize_opts" ]; then
+	lvmextentscore1
+
+	lvdisplay_out="$(really lvdisplay -c "$device")"
+	extents2="$(printf "%s" "$lvdisplay_out" | awk -F: '{print $8}')"
+	extents2=$(( $extents2 + ($extents2+9)/10 - 1 ))
+
+	lvmextentscore2
+fi
+
+lvmcreatecore1
+
+lvcreate -s \
+	$lvm_lvtools_opts \
+	$lvm_lvsize_opts \
+	-n $lvm_lv \
+	$lvm_lvcreate_opts "$device" $lvm_lvcreate_args
+
+mkdir -- "$snmnt"
+mount -v -r $fstype $lvm_mount_opts "$lvpath" "$snmnt"
+
+echo 'lvm snap activated'

@@ -1,22 +1,124 @@
-Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
-Upstream-Name: template-repository
-Source: https://github.com/deepin-community/template-repository
+This package contains some the utilities from Ian Jackson's private
+system `chiark.greenend.org.uk'.
 
-Files: *
-Copyright: 2023 Tsic404 <liuheng@deepin.org>
-License: GPL-2+
- This package is free software; you can redistribute it and/or modify
- it under the terms of the GNU General Public License as published by
- the Free Software Foundation; either version 2 of the License, or
- (at your option) any later version.
- .
- This package is distributed in the hope that it will be useful,
- but WITHOUT ANY WARRANTY; without even the implied warranty of
- MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- GNU General Public License for more details.
- .
- You should have received a copy of the GNU General Public License
- along with this program. If not, see <https://www.gnu.org/licenses/>
- .
- On Debian systems, the complete text of the GNU General
- Public License version 2 can be found in "/usr/share/common-licenses/GPL-2".
+This package, containing the moderately portable sources and Debian
+packaging information, and the resulting Debian binary packages, was
+put together by Ian, but with assistance from other chiark users.  For
+both upstream and Debian packaging questions, please contact
+chiark-utils-maint@chiark.greenend.org.uk.
+
+
+The software included is:
+
+chiark backup, for small systems or networks.  chiark backup is
+ Copyright 1997-1998,2000-2001 Ian Jackson <ian@chiark.greenend.org.uk>
+ Copyright 1999 Peter Maydell <pmaydell@chiark.greenend.org.uk>
+
+readbuffer/writebuffer (in the backup directory), filters for keeping
+tape drives streaming and audio output devices playing.  They are:
+ Copyright 1997-1998,2000-2001 Ian Jackson <ian@chiark.greenend.org.uk>
+
+sync-accounts, a tool for synchronising UN*X password data.  It's
+ Copyright 1999-2000,2002 Ian Jackson <ian@davenant.greenend.org.uk>
+ Copyright 2000-2001 nCipher Corporation Ltd
+
+chiark-named-conf (in the scripts directory) checks and generates
+nameserver configurations.  It is:
+ Copyright 2002 Ian Jackson <ian@chiark.greenend.org.uk>
+
+watershed, a tool for optimising runs of idempotent commands, is
+ Copyright 2007 Canonical Ltd
+
+xbatmon-simple, a simple X client for displaying ACPI battery status
+ Copyright 2004,2012 Ian Jackson <ian@chiark.greenend.org.uk>
+
+xduplic-copier, a simple X client for typing into multiple windows
+ Copyright 2002,2013 Ian Jackson <ian@chiark.greenend.org.uk>
+
+git-cache-proxy, a rather shoddy daemon for speeding up git clone
+ Copyright 2013 Ian Jackson <ian@chiark.greenend.org.uk>
+ Copyright 2010 Tony Finch
+ Copyright 2017 Citrix
+
+summer, a tool for reporting complete details about a filesystem tree
+ Copyright 2003-2007 Ian Jackson <ian@chiark.greenend.org.uk>
+ manpage Copyright 2006 Peter Maydell <pmaydell@chiark.greenend.org.uk>
+
+cvs-repomove and cvs-adjustroot: tools for moving CVS repositories
+ Copyright 2004-2006 Ian Jackson <ian@chiark.greenend.org.uk>
+
+cvsweb-list: cgi program to list ucgi (userv-utils) cvsweb repos
+ Copyright 2001 Ian Jackson <ian@chiark.greenend.org.uk>
+
+expire-iso8601: keeps or expires backup trees named after their dates
+ Copyright 2006 Ian Jackson <ian@chiark.greenend.org.uk>
+
+gnucap2genspic, ngspice2genspic, genspic2gnuplot:
+Tools for converting gnucap files and ngspice output files to
+genspic and genspic files to gnuplot input so they can be plotted.
+ Copyright 2004 Ian Jackson <ian@chiark.greenend.org.uk>
+
+hexterm: connect to serial port and interact in ASCII and hex (hex terminal)
+ Copyright 2005 Ian Jackson <ian@chiark.greenend.org.uk>
+ 
+palm-datebook-reminders: for mailing reminders about Palm PDA appointments
+ Copyright 2003 Ian Jackson <ian@chiark.greenend.org.uk>
+
+acctdump: for reading process acounting files
+ Copyright 1998,2001,2006 Ian Jackson <ian@chiark.greenend.org.uk>
+
+prefork-interp (and supporting Perl module), for amortising script startup
+ Copyright 2016-2022 Ian Jackson <ian@chiark.greenend.org.uk>
+
+random-word, remountresizereiserfs, summarise-mailbox-preserving-privacy
+ Miscellaneous utilities.
+ Copyright 2004,2006 Ian Jackson <ian@chiark.greenend.org.uk>
+
+cgi-fcgi-interp, a piece of glue to make #! work with fcgi utils
+ Copyright 2016-2022 Ian Jackson <ian@chiark.greenend.org.uk>
+
+nntpid
+ Utility for finding usenet articles by messageid from an NNTP server
+ Copyright -2011 Simon Tatham
+ Copyright 2011 Richard Kettlewell
+ Copyright 2011 Colin Watson
+ Copyright 2011 Ian Jackson
+ Dual licence MIT/GPL3+
+
+git-cache-proxy
+ Copyright 2010 Tony Finch
+ Copyright 2013,2014 Ian Jackson
+
+with-lock-ex
+ Copyright 1993-2016 Ian Jackson in some jurisdictions
+ Copyright 2017      Ian Jackson in all jurisdictions
+ Copyright 2017      Genome Research Ltd
+
+fishdescriptor
+ Copyright 2018 Citrix
+
+git-branchmove
+ Copyright 2019 Sean Whitton <spwhitton@spwhitton.name>
+
+The chiark utilities are all free software; you can redistribute them
+and/or modify them under the terms of the GNU General Public License
+as published by the Free Software Foundation; either version 3 of the
+License, or (at your option) any later version.
+
+These programs are distributed in the hope that they will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+General Public License for more details.
+
+You should have received a copy of the GNU General Public License with
+your Debian GNU/Linux system, in /usr/share/common-licenses/GPL-3, or
+with the chiark-utils source package as the file COPYING; if not,
+email me at one of the addresses above or consult the Free Software
+Foundation's website at www.fsf.org, or the GNU Project website at
+www.gnu.org.
+
+
+Some of the source files use the SPDX licence indication convention.
+For example, you may see:
+  SPDX-License-Identifier: GPL-3.0-or-later
+This should be read as a licence grant, as is conventional.

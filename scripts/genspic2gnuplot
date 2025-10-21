@@ -1,0 +1,127 @@
+#!/usr/bin/perl
+#   genspic2gnuplot - Copyright 2004 Ian Jackson - see below
+#
+# Reads a `genspic' file on stdin.  Takes exactly one arg, <pfx>.
+#
+# Produces various output files:
+#  <pfx>.gnuplots.sh                     run this to display results
+#  <pfx>,<Kind><N>.gnuplot-cmd           gnuplot script for displaying:
+#  <pfx>,<Kind><N>-<M>.gnuplot-data      gnuplot-format input data
+#  <pfx>,gnuplot-fifo                    working fifo for .gnuplots.sh
+# where
+#  <Kind> is Freq or Time (according to the type of analysis)
+#  <N>    is the count, starting at 0, of which report this is from gnucap
+#  <M>    is the individual column of Y data
+#
+# Limitations
+#
+#  There's no easy way to mess with the gnuplot settings.
+#
+#  This whole scheme is very clumsy.  There should be a driver program
+#  with command-line option parsing.
+
+# This program and its documentation are free software; you can
+# redistribute them and/or modify them under the terms of the GNU
+# General Public License as published by the Free Software Foundation;
+# either version 3, or (at your option) any later version.
+# 
+# This program and its documentation are distributed in the hope that
+# they will be useful, but WITHOUT ANY WARRANTY; without even the
+# implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR
+# PURPOSE.  See the GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, consult the Free Software Foundation's
+# website at www.fsf.org, or the GNU Project website at www.gnu.org.
+
+die unless @ARGV==1;
+die if $ARGV[0] =~ m/^\-/;
+
+($ofb)= @ARGV;
+$sof= "$ofb.gnuplots.sh";
+open A, "> $sof" or die $!;
+system 'chmod','+x',"$sof"; $? and die $?;
+print A <<END
+#!/bin/sh
+set -e
+fi=$ofb,gnuplot-fifo
+rm -f \$fi
+mkfifo -m 600 \$fi
+END
+    or die $!;
+
+for (;;) {
+    ($c,@s)= split /\s+/, <STDIN>;
+    if ($c eq 'S') {
+	($cplot,$logxy,@columns) = @s;
+	$cplot .= $counter{$cplot}++;
+	unshift @columns, 'x:';
+	@mmm= map { s/^(\w+)\:// or die; $1; } @columns;
+	open S, "> $ofb,$cplot.gnuplot-cmd" or die $!;
+	print S <<END
+set data style lines
+set title '$cplot'
+END
+        or die $!;
+	print S "set logscale xy\n" or die $! if $logxy;
+	print S "set y2tics autofreq\n" or die $! if grep { $_ eq 'y2' } @mmm;
+	undef %min;
+	undef %max;
+	for ($yn=1; $yn<=$#columns; $yn++) {
+	    open "O$yn", "> $ofb,$cplot-$yn.gnuplot-data" or die $!;
+	}
+    } elsif ($c eq 'T') {
+	die unless @mmm;
+	die if @s;
+	foreach $mmm (keys %min) {
+	    print S "set ${mmm}range [$min{$mmm}:$max{$mmm}]\n" or die $!;
+	}
+	$sep= "plot ";
+	for ($yn=1; $yn<=$#columns; $yn++) {
+	    close "O$yn" or die $!;
+	    $mmm[$yn] =~ m/^y2?$/ or die "$mmm[$yn]";
+	    $axes= $mmm[$yn]; $axes =~ s/^y$/y1/;
+	    $yoff= 1-$yn;
+	    print S "$sep\\\n".
+		" '$ofb,$cplot-$yn.gnuplot-data'".
+		    " axes x1$axes title '$columns[$yn]'"
+			or die $!;
+	    $sep= ',';
+	}
+	print S "\n\npause -1\n" or die $!;
+	close S or die $!;
+	print A "  gnuplot $ofb,$cplot.gnuplot-cmd <\$fi &\n" or die $!;
+	@mmm=@columns=();
+    } elsif ($c eq 'D') {
+	die unless @mmm;
+	@numbers= @s;
+	die unless @numbers == @columns;
+	for ($yn=0; $yn<=$#columns; $yn++) {
+	    $_= $numbers[$yn];
+	    $mmm= $mmm[$yn];
+	    $min{$mmm}= $_ unless exists($min{$mmm}) && $min{$mmm} <= $_;
+	    $max{$mmm}= $_ unless exists($max{$mmm}) && $max{$mmm} >= $_;
+	    if ($yn) {
+		printf {"O$yn"} "%s %s\n", $numbers[0], $_
+		    or die $!;
+	    }
+	}
+    } elsif ($c eq 'F') {
+	last;
+    } else {
+	die;
+    }
+}
+
+print A <<END
+exec 3>\$fi
+printf 'hit return to quit: '
+read
+exec 3>&-
+END
+    or die $!;
+close A or die $!;
+
+print ": generated ; $sof\n" or die $!;
+
+# $Id: genspic2gnuplot,v 1.6 2007-09-21 21:21:15 ianmdlvl Exp $

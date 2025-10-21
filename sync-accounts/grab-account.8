@@ -1,0 +1,77 @@
+.\" Hey, Emacs!  This is an -*- nroff -*- source file.
+.TH GRAB\-ACCOUNT 8 "14th July 2002" "Greenend" "chiark utilities"
+.SH NAME
+grab\-account \- add new account synchronised to remote system
+.SH SYNOPSIS
+.BI "grab\-account " local\-user " " source " [" remote\-user ]
+.SH DESCRIPTION
+.B grab-account
+reconfigures sync-accounts to start synchronising a specified local
+user (which may not yet exist) from a specified remote system, and
+then invokes sync-accounts once to synchronise from that source.
+
+.B /etc/sync-accounts/createuser
+should contain a
+.B addhere
+line in the appropriate source section (ie, after
+.BR host " \fIsource\fP)."
+grab-account adds a
+.br
+.BR "  user" " \fIlocal\-user\fP [" remote= "\fIremote\-user\fP]"
+.br
+directive just before
+.B addhere
+and runs
+.BR sync-accounts " \fIsource\fP."
+.SH EXIT STATUS
+.TP
+.B 0
+All went well.
+.TP
+any other
+There were problems.
+.SH FILES
+.BR /etc/sync-accounts ;
+See also
+.BR sync-accounts (8).
+.SH ENVIRONMENT
+See
+.BR sync-accounts (8).
+.SH BUGS
+There is no locking of
+.B /etc/sync-accounts
+so do not invoke grab-account from a script, or more than once at a
+time by hand.  Do not edit /etc/sync-accounts by hand and also
+simultaneously run grab-account.
+
+The mechanism involving
+.B addhere
+is suboptimal.  This should be done with an include feature in
+sync-accounts, so that grab-account does not have to edit a
+configuration file that really belongs to the sysadmin.
+.SH AUTHOR
+.B grab-account
+and this manpage are part of the
+.B sync-accounts
+package which was written by Ian Jackson <ian@chiark.greenend.org.uk>.
+They are Copyright 1999-2000,2002 Ian Jackson
+<ian@davenant.greenend.org.uk>, and Copyright 2000-2001 nCipher
+Corporation Ltd.
+
+The sync-accounts package is free software; you can redistribute it
+and/or modify it under the terms of the GNU General Public License as
+published by the Free Software Foundation; either version 3, or (at
+your option) any later version.
+
+This is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
+details.
+
+You should have received a copy of the GNU General Public License along
+with this program; if not, consult the Free Software Foundation's
+website at www.fsf.org, or the GNU Project website at www.gnu.org.
+.SH SEE ALSO
+.BR sync-accounts "(8), "
+.BR sync-accounts "(5), "
+.BR passwd "(5)"

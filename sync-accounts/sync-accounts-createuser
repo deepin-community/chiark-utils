@@ -1,0 +1,28 @@
+#!/bin/sh
+# $Id: sync-accounts-createuser,v 1.6 2007-09-21 21:21:15 ianmdlvl Exp $
+#
+# Copyright 1999-2002 Ian Jackson <ian@davenant.greenend.org.uk>
+#
+#  This is free software; you can redistribute it and/or modify it under
+#  the terms of the GNU General Public License as published by the Free
+#  Software Foundation; either version 3, or (at your option) any later
+#  version.
+#
+#  This is distributed in the hope that it will be useful, but WITHOUT
+#  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+#  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
+#  for more details.
+#
+#  You should already have a copy of the GNU General Public License.
+#  If not, consult the Free Software Foundation's website at
+#  www.fsf.org, or the GNU Project website at www.gnu.org.
+
+set -e
+un=$SYNCUSER_CREATE_USER
+ui=$SYNCUSER_CREATE_UID
+gi=$SYNCUSER_CREATE_GID
+ho=$SYNCUSER_CREATE_HOME
+test -d $ho || mkdir $ho
+chgrp $gi $ho
+chown $ui $ho
+chmod 2755 $ho

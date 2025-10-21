@@ -1,0 +1,104 @@
+#!/usr/bin/perl -w
+
+# Copyright 2004 Ian Jackson <ian@chiark.greenend.org.uk>
+#
+# This script and its documentation (if any) are free software; you
+# can redistribute it and/or modify them under the terms of the GNU
+# General Public License as published by the Free Software Foundation;
+# either version 3, or (at your option) any later version.
+# 
+# chiark-named-conf and its manpage are distributed in the hope that
+# it will be useful, but WITHOUT ANY WARRANTY; without even the
+# implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR
+# PURPOSE.  See the GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, consult the Free Software Foundation's
+# website at www.fsf.org, or the GNU Project website at www.gnu.org.
+
+use strict;
+
+use IO::Handle;
+use IO::File;
+use POSIX;
+
+our $want= 1;
+our $filename= "/usr/share/dict/words";
+our @randfile= ("/dev/urandom", "/dev/random");
+our $filemaxlen;
+
+sub fail ($) { die "random-word: $_[0]\n"; }
+open D, ">/dev/null" or fail("open /dev/null: $!");
+
+while (@ARGV && $ARGV[0] =~ m/^\-/) {
+    $_= shift @ARGV;
+    if (m/^\-\-?$/) {
+	last;
+    } elsif (m/^\-n(\d+)$/) {
+	$want= $1;
+    } elsif (m/^\-f/ && length > 2) {
+	$filename= $'; #';
+    } elsif (m/^\-F(\d+)$/) {
+	$filemaxlen= $1;
+    } elsif (m/^\-r/ && length > 2) {
+	@randfile= ($'); #');
+    } elsif (m/^\-D$/) {
+	open D, ">&STDERR" or fail("dup stderr for debug: $!");
+    } else {
+	fail("unknown option \`$_'");
+    }
+}
+
+sub debug ($) {
+    print D "random-word: debug: $_[0]\n"
+	or fail("write debug: $!");
+}
+
+our $randfile;
+our $r;
+
+for $randfile (@randfile) {
+    $r= new IO::File "$randfile", 'r';
+    debug("open $randfile ".($r ? "ok" : "failed $!"));
+    last if $r;
+    $!==&ENOENT or fail("cannot open $randfile: $!");
+}
+$r or fail("could not open any random device: $!\n (tried @randfile)");
+$r->autoflush(0);
+
+our $w= new IO::File $filename, 'r';
+$w or fail("cannot open $filename: $!");
+debug("open $filename ok");
+our @words;
+if (defined $filemaxlen) {
+    while (@words < $filemaxlen) {
+	my $l = <$w>;
+	last unless defined $l;
+	push @words, $l;
+    }
+} else {
+    @words= <$w>;
+}
+$w->error and fail("cannot read $filename: $!");
+debug("read $filename ok");
+
+our @out;
+while (@out < $want) {
+    my $rbytes;
+    $!=0; read $r,$rbytes,4;
+    length $rbytes==4 or fail("cannot read $randfile: $!");
+    my $wordno= unpack 'L',$rbytes;
+    $wordno &= ~0x80000000;
+    $wordno %= @words;
+    $_= $words[$wordno];
+    chomp;
+    debug("picked $wordno \`$_'");
+    next unless m/^([a-z][-a-z]+)$/;
+    push @out, $1;
+    debug("good, now ".scalar @out);
+}
+
+debug("enough");
+
+print join(' ',@out), "\n"
+    or fail("cannot write output: $!");

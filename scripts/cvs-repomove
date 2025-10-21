@@ -1,0 +1,278 @@
+#!/bin/bash
+set -e
+print_usage () { cat <<'END'
+usage:
+  to move repository directory, cd to anywhere and
+    cvs-repomove --move local-repo module hostname remote-repo
+    cvs-repomove --move src-hostname src-repo module dst-hostname dst-repo
+  to adjust CVS/Root afterwards, in each working directory
+    cvs-repomove                automatically update **/CVS/Root
+END
+}
+
+# Copyright 2004-2006 Ian Jackson <ian@chiark.greenend.org.uk>
+#
+# This script and its documentation (if any) are free software; you
+# can redistribute it and/or modify them under the terms of the GNU
+# General Public License as published by the Free Software Foundation;
+# either version 3, or (at your option) any later version.
+# 
+# chiark-named-conf and its manpage are distributed in the hope that
+# it will be useful, but WITHOUT ANY WARRANTY; without even the
+# implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR
+# PURPOSE.  See the GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, consult the Free Software Foundation's
+# website at www.fsf.org, or the GNU Project website at www.gnu.org.
+
+
+# We do things in the following order:
+#						src		dst
+#  0. Check things				@/..moving-to	none/..moved-to
+#  1. Rename src repo to prevent commits etc.	..moving-to	none/..moved-to
+#  2. Make temporary copy at destination	..moving-to	..tmp
+#  3. Install temporary copy at destination	..moving-to	@
+#  4. Move aside src repo			..moved-to	@
+
+fail () { echo >&2 "error: $1"; exit 8; }
+bad_usage () { echo >&2 "bad usage: $1"; print_usage >&2; exit 12; }
+
+move=false
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+	--move)		move=true ;;
+	--help)		print_usage; exit 0 ;;
+	--)		;;
+	-*)		bad_usage "unknown option $1" ;;
+	*)		break ;;
+	esac
+	shift
+done
+
+mn () { echo " $1"; }
+
+check_module () {
+	case "$module" in
+	*..*)		fail \
+ "moving a module with \`..' in its name is not supported" ;;
+	*/*)		fail \
+ "moving a subdirectory is not supported" ;;
+	-*)		fail \
+ "moving a module whose name starts with \`-' is not supported" ;;
+	esac
+}
+
+check_hostname () {
+	case "$1" in
+	/*|.*|-*)	fail "bad hostname $dsthost" ;;
+	esac
+}
+
+check_remote_path () {
+	case "$1" in
+	*[^0-9a-zA-Z/._+,-]*) fail \
+		"pathname may not contain metacharacters, sorry" ;;
+	esac
+}
+
+do_move () {
+	check_module
+	check_hostname "$srchost"
+	check_hostname "$dsthost"
+	check_remote_path "$srcrepo/$module"
+	check_remote_path "$dstrepo/$module"
+
+	case "$dstrepo" in
+	/*)	;;
+	*)	bad_usage "destination repo path must be absolute" ;;
+	esac
+
+	printf "moving module %s from %s:%s to %s:%s\n" \
+		"$module" "$srchost" "$srcrepo" "$dsthost" "$dstrepo"
+
+	mn "checking existing repository"
+	"$CVS_RSH" "$srchost" bash -ec "'
+ ls -d -- $srcrepo/CVSROOT >/dev/null
+	'"
+
+	dstrepotrans="$(printf '%s\n' "$dstrepo" | tr / :)"
+	movingto="moving-to-$dsthost:$dstrepotrans"
+	resume="$("$CVS_RSH" "$srchost" bash -ec "'
+ if test -d $srcrepo/$module..$movingto; then
+  echo >&2 \"    resuming previous attempt at a move\"
+  resume=true
+  if test -d $srcrepo/$module; then
+   echo >&2 \"but $srcrepo/$module exists too\"
+   exit 1
+  fi
+ else
+  resume=false
+  ls -d -- $srcrepo/$module >/dev/null
+ fi
+ set +e
+ previously=\"$(ls -d -- $srcrepo/$module..moved-to-* 2>/dev/null)\"
+ set -e
+ if [ \"x\$previously\" != x ]; then
+  echo >&2 \"    btw, module was once before moved away from here\"
+  mv -- \"\$previously\" \
+   \"\${previously/..moved-to-/..previously-\$(date +%s)-moved-to-}\"
+ fi
+ echo \$resume
+	'")"
+
+	mn "checking dst repository"
+ 	"$CVS_RSH" "$dsthost" bash -ec "'
+ cd $dstrepo
+ ls -d CVSROOT >/dev/null
+ if test -d $dstrepo/$module; then
+  echo >&2 module already exists in destination repo
+  exit 1
+ fi
+ for f in $module..*; do
+  case \"\$f\" in
+  *..moved-to-*)
+   echo \"    btw, module was previously at destn repo\"
+   mv -- \"\$f\" \
+    \"\${f/..moved-to-/..previously-\$(date +%s)-moved-to-}\"
+   ;;
+  *..previously-*) ;;
+  *..tmp-*)
+   echo \"    nb: possibly-stale temp/partial copy \$f\"
+   ;;
+  *..\*)
+   ;;
+  *)
+   echo >&2 \"error: found unexpected subdir \$f\"
+   exit 8
+   ;;
+  esac
+ done
+ 	'"
+
+	if ! $resume; then
+		"$CVS_RSH" "$srchost" bash -ec "'
+ mv -- $srcrepo/$module $srcrepo/$module..$movingto
+		'"
+	fi
+
+	mn "transferring repo data"
+	tmpid="tmp-$(uname -n).$(date +%s)"
+	"$CVS_RSH" "$srchost" bash -ec "'
+ tar -c -C $srcrepo/$module..$movingto -f - .
+	'" | "$CVS_RSH" "$dsthost" bash -ec "'
+		cd $dstrepo
+		mkdir $module..$tmpid
+		cd $module..$tmpid
+		tar --no-same-owner -xf -
+	'"
+	test "${PIPESTATUS[*]}" = "0 0"
+
+	mn "confirming move at destination repo"
+	"$CVS_RSH" "$dsthost" bash -ec "'
+		cd $dstrepo
+		mv $module..$tmpid $module
+	'"
+
+	mn "confirming move at source repo"
+	"$CVS_RSH" "$srchost" bash -ec "'
+ mv -- $srcrepo/$module..$movingto \
+  $srcrepo/$module..moved-to-$dsthost:$dstrepotrans
+	'"
+	echo "module moved successfully"
+}
+
+compute_fqdn_data () {
+	fqdn_data="$(adnshost -s - "$1" 2>/dev/null || true)"
+}
+
+do_furtle () {
+	module="$(cat CVS/Repository)"
+	oldroot="$(cat CVS/Root)"
+	goose="$oldroot"
+	check_module
+	printf "checking/updating repo for %s\n" "$module"
+	compute_fqdn_data "$(uname -n)"
+	our_fqdn_data="$fqdn_data"
+	searching=true
+	while $searching; do
+		mn "chasing geese at $goose"
+		case "$goose" in
+		*[0-9a-zA-Z]:/*)
+			remotehost="${goose%%:*}"
+			path="${goose#*:}"
+			check_hostname "$remotehost"
+			check_remote_path "$path/$module"
+			isremote=true
+			compute_fqdn_data "$remotehost"
+			if [ "x$fqdn_data" = "x$our_fqdn_data" -a \
+				"x$fqdn_data" != x ]; then
+				isremote=false
+				goose="$path"
+			fi
+			;;
+		*:*)
+			fail "unknown remote repository string $goose"
+			;;
+		/*)
+			isremote=false
+			path="$goose"
+			;;
+		*)
+			fail "unknown repository string $goose"
+			;;
+		esac
+		check="
+ cd $path
+ if test -d $module; then echo good; exit 0; fi
+ if ls -d $module..moved-to-* 2>/dev/null; then exit 0; fi
+ echo bad
+"
+		if $isremote; then
+			new_goose_info="$("$CVS_RSH" "$remotehost" \
+					bash -ec "'$check'")"
+		else
+			new_goose_info="$(	bash -ec "$check")"
+		fi
+		case "$new_goose_info" in
+		good)
+			searching=false
+			;;
+		bad)
+			echo >&2 "trail went cold at $goose"
+			exit 4
+			;;
+		*..moved-to-*)
+			goose="$(printf '%s\n' \
+				"${new_goose_info#*..moved-to-}" | \
+				tr : / | sed -e 's,/,:,')"
+			;;
+		esac
+	done
+	if [ "x$goose" = "x$oldroot" ]; then
+		echo 'repo has not moved - nothing to do'
+		exit 0
+	fi
+	mn "found new repo, adjusting working tree"
+	cvs-adjustroot "$oldroot" "$goose"
+	echo 'working tree adjustment completed'
+}
+
+if $move; then
+	if [ $# = 4 ]; then
+		srchost="$(hostname -f)"; srcrepo="$1"
+		module="$2";
+		dsthost="$3"; dstrepo="$4"
+	elif [ $# = 5 ]; then
+		srchost="$1"; srcrepo="$2"
+		module="$3";
+		dsthost="$4"; dstrepo="$5"
+	else
+		bad_usage "--move needs hostname(s) and paths"
+	fi
+	do_move
+else
+	[ "$#" = 0 ] || bad_usage "without --move, give no arguments"
+	do_furtle
+fi

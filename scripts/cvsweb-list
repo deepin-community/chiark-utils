@@ -1,0 +1,80 @@
+#!/usr/bin/perl
+# cvsweb-list
+# This little program produces a web page listing the cvs repositories
+# available by ucgi cvsweb.  It doesn't really separate code and
+# configuration, so it's not installed by default with chiark-utils.
+
+# This file is part of chiark-utils, a collection of useful programs
+# used on chiark.greenend.org.uk.
+#
+# This file is:
+#  Copyright 2001 Ian Jackson <ian@chiark.greenend.org.uk>
+#
+# This is free software; you can redistribute it and/or modify it under the
+# terms of the GNU General Public License as published by the Free Software
+# Foundation; either version 3, or (at your option) any later version.
+#
+# This is distributed in the hope that it will be useful, but WITHOUT ANY
+# WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+# FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
+# details.
+#
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, consult the Free Software Foundation's
+# website at www.fsf.org, or the GNU Project website at www.gnu.org.
+
+
+print <<END or die $!;
+Content-Type: text/html
+
+<head>
+<title>chiark public CVS</title>
+<link rev="made" href="mailto:webmaster\@chiark.greenend.org.uk">
+</head>
+<body>
+<h1><img src="/chiark/icon90.gif" border="0" width="128" height="64"
+alt=""> chiark users' public CVS</h1>
+<ul>
+END
+
+open UL, "/etc/userlist" or die $!;
+while (<UL>) {
+    next if m/^\#/ or !m/\S/;
+    chomp($user= $_);
+    next unless readlink "/home/$user/public-cgi/cvsweb"
+	eq '/usr/local/lib/cvsweb';
+    $hd= 0;
+    $pc= "/home/$user/public-CVS/";
+    next unless opendir D, $pc;
+    while (defined($mod= readdir D)) {
+	next unless -d "$pc/$mod";
+	next if $mod =~ m/^\./;
+	if (!$hd) {
+	    print "<li><A href=\"/ucgi/~$user/cvsweb\">$user</A>" or die $!;
+	    print " (<A href=\"/~$user/\">homepage</A>)" or die $!
+		if -d "/home/$user/public-html";
+	    print ":" or die $!;
+	    $hd= 1;
+	} else {
+	    print "," or die $!;
+	}
+	print " <A href=\"/ucgi/~$user/cvsweb/$mod/\">$mod</A>" or die $!;
+    }
+    next unless $hd;
+    print "</li>\n" or die $!;
+}
+
+close UL or die $!;
+
+print <<END or die $!;
+</ul>
+<hr>
+<ADDRESS>
+  maintained by
+  <A HREF="mailto:$ENV{SERVER_ADMIN}">$ENV{SERVER_ADMIN}</A>;
+  <A href="/">chiark home page</A>
+</ADDRESS>
+</body>
+END
+
+exit 0

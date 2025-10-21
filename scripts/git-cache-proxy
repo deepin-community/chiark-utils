@@ -1,0 +1,585 @@
+#!/usr/bin/perl -w
+#
+# git caching proxy
+
+# Suitable only for exposing to semi-trusted clients: clients are not
+# supposed to be able to take over the server.  However, clients can
+# probably deny service to each other because the current
+# implementation is not very good at handling various out-of-course
+# situations (notably, clients which are too slow).
+
+# usage: run it on some port, and then clone or fetch
+#  "git://<realhost>:<realport>/<real-git-url>[ <options>]"
+# where <real-git-url> is http://<host>/... or git://<host>/...
+# and <options> is zero or more (whitespace-separated) of
+#    [<some-option>]      will be ignored if not recognised
+#    {<some-option>}      error if not recognised
+# options currently known:
+#    fetch=must           fail if the fetch/clone from upstream fails
+#    fetch=no             just use what is in the cache
+#    fetch=try            use what is in the cache if the fetch/clone fails
+#    timeout=<seconds>    length of time to allow for fetch/clone
+#    housekeeping-interval-days=<integer>  } housekeeping tuning parameters
+#    tree-expire-days=<integer>            }
+#    gc-interval-days=<integer>            }
+
+# example inetd.conf line:
+#  9419 stream tcp nowait git-cache /usr/bin/git-cache-proxy git-cache-proxy
+# you'll need to 
+#  adduser git-cache
+#  mkdir /var/cache/git-cache-proxy
+#  chown git-cache /var/cache/git-cache-proxy
+
+# git-cache-proxy
+# Copyright 2010 Tony Finch
+# Copyright 2013,2014 Ian Jackson
+# Copyright 2017 Citrix
+# 
+# git-cache-proxy is free software; you can redistribute it and/or
+# modify them under the terms of the GNU General Public License as
+# published by the Free Software Foundation; either version 3, or (at
+# your option) any later version.
+#
+# git-cache-proxy is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, consult the Free Software Foundation's
+# website at www.fsf.org, or the GNU Project website at www.gnu.org.
+# 
+# (Some code taken from userv-utils's git-daemon.in and git-service.in
+# which were written by Tony Finch <dot@dotat.at> and subsequently
+# heavily modified by Ian Jackson <ijackson@chiark.greenend.org.uk>
+# and were released under CC0 1.0.  The whole program is now GPLv3+.)
+
+use strict;
+use warnings;
+
+use POSIX;
+use Socket;
+use Sys::Syslog;
+use Fcntl qw(:flock SEEK_SET);
+use File::Path qw(remove_tree);
+
+our $us = 'git-cache-proxy';
+
+our $debug = 0;
+our $housekeepingeverydays = 1;
+our $gcintervaldays = 10;
+our $treeexpiredays = 21;
+our $fetchtimeout = 3600;
+our $maxfetchtimeout = 7200;
+our $servetimeout = 3600;
+our $cachedir = '/var/cache/git-cache-proxy';
+our $housekeepingonly = 0;
+
+#---------- error handling and logging ----------
+
+# This is a bit fiddly, because we want to catch errors sent to stderr
+# and dump them to syslog if we can, but only if we are running as an
+# inetd service.
+
+our $log; # filehandle (ref), or "1" meaning syslog
+
+sub ntoa {
+    my $sockaddr = shift;
+    return ('(local)') unless defined $sockaddr;
+    my ($port,$addr) = sockaddr_in $sockaddr;
+    $addr = inet_ntoa $addr;
+    return ("[$addr]:$port",$addr,$port);
+}
+
+our ($client) = ntoa getpeername STDIN;
+our ($server) = ntoa getsockname STDIN;
+
+sub ensurelog () {
+    return if $log;
+    openlog $us, qw(pid), 'daemon';
+    $log = 1;
+}
+
+sub logm ($$) {
+    my ($pri, $msg) = @_;
+    return if $pri eq 'debug' && !$debug;
+    if ($client eq '(local)') {
+	print STDERR "$us: $pri: $msg\n" or die $!;
+	return;
+    }
+    ensurelog();
+    my $mainmsg = sprintf "%s-%s: %s", $server, $client, $msg;
+    if (ref $log) {
+	my $wholemsg = sprintf("%s [%d] %s: %s\n",
+			       strftime("%Y-%m-%d %H:%M:%S Z", gmtime),
+			       $$,
+			       $pri eq 'err' ? 'error' : $pri,
+			       $mainmsg);
+	print $log $wholemsg;
+    } else {
+	syslog $pri, "%s", "$pri $mainmsg";
+    }
+}
+
+if ($client ne '(local)') {
+    open STDERR, ">/dev/null" or exit 255;
+    open TEMPERR, "+>", undef or exit 255;
+    open STDERR, ">&TEMPERR" or exit 255;
+}
+
+END {
+    if ($client ne '(local)') {
+	if ($?) { logm 'crit', "crashing ($?)"; }
+	seek TEMPERR, 0, SEEK_SET;
+	while (<TEMPERR>) {
+	    chomp;
+	    logm 'crit', $_;
+	}
+    }
+    exit $?;
+}
+
+sub fail ($) {
+    my ($msg) = @_;
+    logm 'err', $msg;
+    exit 0;
+}
+
+$SIG{ALRM} = sub { fail "timeout" };
+
+sub gitfail ($) {
+    my ($msg) = @_;
+    close LOCK;
+    alarm 60;
+    logm 'notice', $msg;
+    my $gitmsg = "ERR $us: $msg";
+    $gitmsg = substr($gitmsg,0,65535); # just in case
+    printf "%04x%s", length($gitmsg)+4, $gitmsg;
+    flush STDOUT;
+    exit 0;
+}
+
+#---------- argument parsing ----------
+
+for (;;) {
+    last unless @ARGV;
+    last unless $ARGV[0] =~ m/^-/;
+    $_ = shift @ARGV;
+    for (;;) {
+	last unless m/^-./;
+	if (s/^-H/-/) {
+	    $housekeepingonly++;
+	} elsif (s/^-D/-/) {
+	    $debug++;
+	} elsif (s/^-L(.*)$//) {
+	    my $logfile = $_;
+	    open STDERR, ">>", $logfile or fail "open $logfile: $!";
+	    $log = \*STDERR;
+	} elsif (s/^-d(.*)$//) {
+	    $cachedir = $1;
+	} elsif (s/^--( max-fetch-timeout
+                      | fetch-timeout
+                      | serve-timeout
+                      | tree-expire-days
+                      | housekeeping-interval-days
+                      | gc-interval-days
+                      )=(\d+)$//x) {
+	    my $vn = $1;
+	    $vn =~ y/-//d;
+	    die $vn unless defined ${ $::{$vn} };
+	    ${ $::{$vn} } = $2;
+	} else {
+	    fail "bad usage: unknown option `$_'";
+	}
+    }
+}
+
+!@ARGV or fail "bad usage: no non-option arguments permitted";
+
+#---------- utility functions ----------
+
+sub lockfile ($$$$) {
+    my ($fh, $fn, $flockmode, $update_ts) = @_;
+    my $what = $fn.(($flockmode & ~LOCK_NB) == LOCK_SH ? " (shared)" : "");
+    for (;;) {
+	close $fh;
+	open $fh, ($update_ts ? '+>' : '+>>'), $fn
+	    or fail "open/create $fn for lock: $!";
+	logm 'debug', "lock $what: acquiring";
+	if (!flock $fh, $flockmode) {
+	    if ($flockmode & LOCK_NB && $! == EWOULDBLOCK) {
+		return 0; # ok then
+	    }
+	    fail "lock $what: $!";
+	}
+	stat $fh or fail "stat opened $fn: $!";
+	my $fh_ino = ((stat _)[1]);
+	if (!stat $fn) {
+	    $! == ENOENT or fail "stat $fn: $!";
+	    next;
+	}
+	my $fn_ino = ((stat _)[1]);
+	if ($fn_ino == $fh_ino) {
+	    logm 'debug', "lock $what: acquired";
+	    return 1;
+	}
+	logm 'debug', "lock $what: deleted, need to loop again";
+	# oh dear
+    }
+}
+
+sub xread {
+    my $length = shift;
+    my $buffer = "";
+    while ($length > length $buffer) {
+        my $ret = sysread STDIN, $buffer, $length, length $buffer;
+        fail "expected $length bytes, got ".length $buffer
+                            if defined $ret and $ret == 0;
+        fail "read: $!" if not defined $ret and $! != EINTR and $! != EAGAIN;
+    }
+    return $buffer;
+}
+
+#---------- main program ----------
+
+chdir $cachedir or fail "chdir $cachedir: $!";
+
+our ($service,$specpath,$spechost,$extraparams,$subdir);
+our ($tmpd,$gitd,$lock);
+our ($fetch,$url);
+
+sub servinfo ($) {
+    my ($msg) = @_;
+    logm 'info', "service `$specpath': $msg";
+}
+
+sub readcommand () {
+    alarm 30;
+
+    my $hex_len = xread 4;
+    fail "Bad hex in packet length" unless $hex_len =~ m|^[0-9a-fA-F]{4}$|;
+    my $line = xread -4 + hex $hex_len;
+    unless (($service,$specpath,$spechost,$extraparams) = $line =~
+	    m|^(git-[a-z-]+) /*([!-~ ]+)\0host=([!-~]+)\0(\0(?:[^\0]+\0)+)?|) {
+	$line =~ s|[^ -~]+| |g;
+	gitfail "unknown/unsupported instruction `$line'"
+    }
+
+    alarm 0;
+
+    $service eq 'git-upload-pack'
+	or gitfail "unknown/unsupported service `$service'";
+
+    $fetch = 2; # 0:don't; 1:try; 2:force
+    $url = $specpath;
+
+    while ($url =~ s#\s+(\[)([^][{}]+)\]$## ||
+	   $url =~ s#\s+(\{)([^][{}]+)\}$##) {
+	$_ = $2;
+	my $must = $1 eq '{';
+	if (m/^fetch=try$/) {
+	    $fetch = 1;
+	} elsif (m/^fetch=no$/) {
+	    $fetch = 0;
+	} elsif (m/^fetch=must$/) {
+	    $fetch = 2; # the default
+	} elsif (m/^timeout=(\d+)$/ && $1 >= 1) {
+	    $fetchtimeout = $1 <= $maxfetchtimeout ? $1 : $maxfetchtimeout;
+	} elsif ($must) {
+	    gitfail "unknown/unsupported option `$_'";
+	}
+    }
+
+    $url =~ m{^(?:https?|git)://[-.0-9a-z]+/}
+        or gitfail "unknown/unsupported url scheme or format `$url'";
+
+    $subdir = $url;
+    $subdir =~ s|\\|\\\\|g;
+    $subdir =~ s|,|\\,|g;
+    $subdir =~ s|/|,|g;
+
+    $tmpd= "$subdir\\.tmp";
+    $gitd= "$subdir\\.git";
+    $lock = "$subdir\\.lock";
+
+    servinfo "locking";
+}
+
+sub update_gcstamp ($) {
+    my ($gitdir) = (@_);
+    my $gcdone = "$gitdir/cache-proxy-gc.stamp";
+    if (open GCSTAMP, '>', $gcdone) {
+	close GCSTAMP;
+    } else {
+	$!==ENOENT or fail "create $gcdone: $!";
+    }
+}
+
+sub clonefetch () {
+    lockfile \*LOCK, $lock, LOCK_EX, 1;
+
+    my $exists = lstat $gitd;
+    $exists or $!==ENOENT or fail "lstat $gitd: $!";
+
+    our $fetchfail = '';
+
+    if ($fetch) {
+
+	my $rbits = '';
+	vec($rbits,0,1) = 1;
+	my $ebits = $rbits;
+	my $r=select $rbits,undef,$ebits,0;
+	$r>=0 or fail "select recheck STDOUT failed: $!";
+	if ($r) {
+	    servinfo 'client disconnected (stdin unexpectedly'.
+		(vec($rbits,0,1) ? ' readable' : '').
+		(vec($ebits,0,1) ? ' exception' : '').
+		')';
+	    exit 0;
+	}
+
+	our @cmd;
+
+	if (!$exists) {
+	    system qw(rm -rf --), $tmpd;
+	    @cmd = (qw(git clone -q --mirror), $url, $tmpd);
+	    servinfo "cloning";
+	} else {
+	    @cmd = (qw(git remote update --prune));
+	    servinfo "fetching";
+	}
+	my $cmd = "@cmd[0..1]";
+
+	my $child = open FETCHERR, "-|";
+	defined $child or fail "fork: $!";
+	if (!$child) {
+	    if ($exists) {
+		chdir $gitd or fail "chdir $gitd: $!";
+	    }
+	    setpgrp or fail "setpgrp: $!";
+	    open STDERR, ">&STDOUT" or fail "redirect stderr: $!";
+	    exec @cmd or fail "exec $cmd[0]: $!";
+	}
+
+	my $fetcherr = '';
+	my $timedout = 0;
+	{
+	    local $SIG{ALRM} = sub {
+		servinfo "fetch/clone timeout";
+		$timedout=1; kill 9, -$child;
+	    };
+	    alarm($fetchtimeout);
+	    $!=0; { local $/=undef; $fetcherr = <FETCHERR>; }
+	    !FETCHERR->error or fail "read pipe from fetch/clone: $!";
+	    alarm(10);
+	}
+
+	kill -9, $child or fail "kill fetch/clone: $!";
+	$!=0; $?=0; if (!close FETCHERR) {
+	    fail "reap fetch/clone: $!" if $!;
+	    my $fetchfail =
+		!($? & 255) ? "$cmd died with error exit code ".($? >> 8) :
+		$? != 9 ? "$cmd died due to fatal signa, status $?" :
+		$timedout ? "$cmd timed out (${fetchtimeout}s)" :
+		"$cmd died due to unexpected SIGKILL";
+	    if (length $fetcherr) {
+		$fetchfail .= "\n$fetcherr";
+		$fetchfail =~ s/\n$//;
+		$fetchfail =~ s{\n}{ // }g;
+	    }
+	    if ($fetch >= 2) {
+		gitfail $fetchfail;
+	    } else {
+		servinfo "fetch/clone failed: $fetchfail";
+	    }
+	}
+        alarm 0;
+
+	if (!$exists) {
+	    update_gcstamp($tmpd);
+	    rename $tmpd, $gitd or fail "rename fresh $tmpd to $gitd: $!";
+	    $exists = 1;
+	}
+    } else {
+	$fetchfail = 'not attempted';
+    }
+
+    if (!$exists) {
+	gitfail "no cached data, and not cloned: $fetchfail";
+    }
+
+    servinfo "sharing";
+    lockfile \*LOCK, $lock, LOCK_SH, 1; # NB releases and relocks
+
+    if (stat $gitd) {
+	return 1;
+    }
+    $!==ENOENT or fail "stat $gitd: $!";
+
+    # Well, err, someone must have taken the lock in between
+    # and garbage collected it.  How annoying.
+    return 0;
+}
+
+sub hkfail ($) { my ($msg) = @_; fail "housekeeping: $msg"; }
+
+sub housekeeping () {
+    logm 'info', "housekeeping started";
+    foreach $lock (<[a-z]*\\.lock>) {
+	my $subdir = $lock;  $subdir =~ s/\\.lock$//;
+	my $gcdone = "$subdir\\.git/cache-proxy-gc.stamp";
+	if (!lstat $lock) {
+	    $! == ENOENT or hkfail "$lock: lstat: $!";
+	    next;
+	}
+	my ($mode_what,$mode_locknb,$mode_action);
+	if (-M _ <= $treeexpiredays) {
+	    my $gccheck = sub {
+		if (!lstat "$gcdone") {
+		    $! == ENOENT or hkfail "$gcdone: lstat: $!";
+		    return 1, "touched recently, never gc'd!";
+		} elsif (-M _ <= $gcintervaldays) {
+		    return 0, "touched recently, gc'd recently";
+		} else {
+		    return 1, "touched recently, needs gc";
+		}
+	    };
+	    my ($needsgc, $gcmsg) = $gccheck->();
+	    logm 'debug', "housekeeping: subdirs $subdir: $gcmsg";
+	    next unless $needsgc;
+	    $mode_what = 'garbage collecting';
+	    $mode_locknb = 0;
+	    $mode_action = sub {
+		my ($needsgc, $gcmsg) = $gccheck->();
+		if (!$needsgc) {
+		    logm 'info',
+			"housekeeping: subdirs $subdir: someone else has gc'd";
+		    return;
+		}
+		logm 'debug', "housekeeping: subdirs $subdir: $gcmsg (2)";
+		my $gclog = "$subdir/gc.log";
+		unlink $gclog or $!==ENOENT or hkfail "remove $gclog: $!";
+		my $child = fork // hkfail "fork (for $subdir): $!";
+		if (!$child) {
+		    if (!chdir "$subdir\\.git") {
+			exit 0 if $!==ENOENT;
+			die "for gc: chdir $subdir: $!\n";
+		    }
+		    exec qw(git gc --quiet);
+		    die "exec git gc (for $subdir): $!\n";
+		}
+		waitpid($child, 0) == $child or hkfail "waitpid failed! $!";
+		if ($?) {
+		    logm 'err',
+ "housekeeping: subdirs $subdir: gc failed (wait status $?)";
+		} else {
+		    update_gcstamp("$subdir\\.git");
+		    logm 'debug',
+			"housekeeping: subdirs $subdir: gc done";
+		}
+	    };
+	} else {
+	    $mode_what = 'cleaning';
+	    $mode_locknb = LOCK_NB;
+	    $mode_action = sub {
+		eval {
+		    foreach my $suffix (qw(tmp git)) {
+			my $dir = "${subdir}\\.$suffix";
+			my $tdir = "${subdir}\\.tmp";
+			if ($dir ne $tdir) {
+			    if (!rename $dir,$tdir) {
+				next if $! == ENOENT;
+				die "$dir: cannot rename to $tdir: $!\n";
+			    }
+			}
+			system qw(rm -rf --), $tdir;
+			if (stat $tdir) {
+ die "$dir: problem deleting file(s), rm exited $?\n";
+			} elsif ($! != ENOENT) {
+			    die "$tdir: cannot stat after deletion: $!\n";
+			}
+		    }
+		};
+		if (length $@) {
+		    chomp $@;
+ logm 'warning', "housekeeping: $subdir: cleanup prevented: $@";
+		} else {
+		    unlink $lock or hkfail "remove $lock: $!";
+		}
+	    };
+	}
+	if (!lockfile \*LOCK, $lock, LOCK_EX|$mode_locknb, 0) {
+            die $! unless $mode_locknb;
+	    logm 'info', "housekeeping: subdirs $subdir: lock busy, skipping";
+	    next;
+	}
+	logm 'info', "housekeeping: subdirs $subdir: $mode_what";
+	$mode_action->();
+    }
+    open HS, ">", "Housekeeping.stamp" or hkfail "touch Housekeeping.stamp: $!";
+    close HS or hkfail "close Housekeeping.stamp: $!";
+    logm 'info', "housekeeping finished";
+}
+
+sub housekeepingcheck ($$) {
+    my ($dofork, $force) = @_;
+    if (!$force) {
+	if (!lockfile \*HLOCK, "Housekeeping.lock", LOCK_EX|LOCK_NB, 1) {
+	    logm 'debug', "housekeeping lock taken, not running";
+	    close HLOCK;
+	    return 0;
+	}
+    }
+    if ($force) {
+	logm 'info', "housekeeping forced";
+    } elsif (!lstat "Housekeeping.stamp") {
+	$! == ENOENT or fail "lstat Housekeeping.stamp: $!";
+	logm 'info', "housekeeping not done yet, will run";
+    } elsif (-M _ <= $housekeepingeverydays) {
+	logm 'debug', "housekeeping done recently";
+	close HLOCK;
+	return 0;
+    }
+    if ($dofork) {
+	my $child = fork;
+	defined $child or fail "fork: $!";
+	if (!$child) {
+	    open STDERR, "|logger -p daemon.warning -t '$us(housekeeping)'"
+		or die "fork: logger $!";
+	    housekeeping();
+	    exit 0;
+	}
+    } else {
+	housekeeping();
+    }
+    close HLOCK;
+    return 1;
+}
+
+sub runcommand () {
+    servinfo "serving";
+
+    chdir $gitd or fail "chdir $gitd: $!";
+
+    if ($extraparams) {
+        $extraparams =~ s/^\0(.+)\0$/$1/;
+        $extraparams =~ s/\0/:/g;
+        $ENV{GIT_PROTOCOL} = "$extraparams";
+    }
+
+    exec qw(git-upload-pack --strict), "--timeout=$servetimeout", qw(.)
+	or fail "exec git-upload-pack: $!";
+}
+
+sub daemonservice () {
+    readcommand();
+    while (!clonefetch()) { }
+    housekeepingcheck(1,0);
+    runcommand();
+}
+
+if ($housekeepingonly) {
+    housekeepingcheck(0, $housekeepingonly>=2);
+} else {
+    daemonservice();
+}
