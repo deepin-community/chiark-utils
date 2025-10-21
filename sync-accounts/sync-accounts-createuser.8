@@ -1,0 +1,101 @@
+.\" Hey, Emacs!  This is an -*- nroff -*- source file.
+.TH SYNC\-ACCOUNTS\-CREATEUSER 8 "14th July 2002" "Greenend" "chiark utilities"
+.SH NAME
+sync\-accounts\-createuser \- helper/hook program for sync\-accounts
+.SH SYNOPSIS
+.BI SYNCUSER_CREATE_ var = "value\fP... \fI" sync\-accounts\-createuser
+.SH DESCRIPTION
+.B sync-accounts-createuser
+is invoked by
+.B sync-accounts
+when sync-accounts is creating a local account.
+
+It must perform all of the tasks involved with local account creation
+except for the actual changes to the password, shadow and group
+databases.
+
+At the very minimum, it must create the new account's home directory
+(with appropriate permissions).  The supplied sync-accounts-createuser
+script does exactly that.
+
+It may also suggest to sync-accounts modifications to the new
+account's passwd entry.
+.SH INVOCATION
+When sync-accounts-createuser is invoked, the passwd and group entries
+will not yet have been set up, so it may not rely on them.
+sync-accounts-createuser will not be supplied with any arguments.
+However, the following environment variables will be set, giving
+details about the account to be created:
+.br
+.B " " SYNCUSER_CREATE_USER
+.br
+.B " " SYNCUSER_CREATE_UID
+.br
+.B " " SYNCUSER_CREATE_GID
+.br
+.B " " SYNCUSER_CREATE_COMMENT
+.br
+.B " " SYNCUSER_CREATE_HOME
+.br
+.B " " SYNCUSER_CREATE_SHELL
+.SH RESULTS
+sync-accounts-createuser should usually produce no output.
+
+It can inhibit the creation of the user by outputting a single line
+not containing a colon; in this case, a diagnostic message will be
+written to sync-accounts's logfile, and the user will be skipped.
+
+Alternatively, it may write out an alternative password file entry, in
+which case sync-accounts will use the supplied data for the local
+passwd file instead of that from the remote host.
+The line should be in
+Sys-V passwd file format (regardless of
+.B localformat
+or
+.B remoteformat
+settings).  The username field should be taken from
+.BR SYNCUSER_CREATE_USER ,
+and the password field should be
+.BR x .
+.SH EXIT STATUS
+.TP
+.B 0
+All went well, or we wrote a line without a colon to say
+that the account should not be created.
+.TP
+any other
+There were serious problems and sync-accounts should bomb out
+immediately.
+.SH FILES
+None.
+.SH ENVIRONMENT
+See above.
+.SH BUGS
+The supplied sync-accounts-createuser does not check that it
+was not supplied with any arguments; nor does it check that the
+.B SYNCUSER_CREATE_*
+variables are set, or have sensible values.
+.SH AUTHOR
+.B sync-accounts-createuser
+and this manpage were written by Ian Jackson
+<ian@chiark.greenend.org.uk>.  They are Copyright 1999-2002 Ian
+Jackson <ian@davenant.greenend.org.uk>.  This manpage forms part of
+the sync-accounts package.
+
+sync-accounts-createuser and the sync-accounts package are free
+software; you can redistribute it and/or modify it under the terms of
+the GNU General Public License as published by the Free Software
+Foundation; either version 3, or (at your option) any later version.
+
+This is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
+details.
+
+You should have received a copy of the GNU General Public License along
+with this program; if not, consult the Free Software Foundation's
+website at www.fsf.org, or the GNU Project website at www.gnu.org.
+.SH SEE ALSO
+.BR sync-accounts "(8), "
+.BR sync-accounts "(5), "
+.BR passwd "(5)"

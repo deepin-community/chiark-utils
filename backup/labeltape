@@ -1,0 +1,46 @@
+#!/usr/bin/perl
+
+use POSIX;
+
+$etc= '/etc/chiark-backup';
+require "$etc/settings.pl";
+require 'backuplib.pl';
+
+while ($ARGV[0] =~ m/^-/) {
+    $_= shift @ARGV;
+    last if m/^\-$/;
+    s/^\-//;
+    while (length) {
+	if (s/^f//) {
+	    $force=1;
+	} else {
+	    die "$0: unknown option -$_\n";
+	}
+    }
+}
+
+@ARGV==1 or die "$0: need 1 arg, new TAPEID\n";
+($newid)= @ARGV;
+
+open LOG, ">/dev/null" or die $!;
+
+readtapeid_raw();
+
+if (!open T,'TAPEID') {
+    $!==&ENOENT or die $!;
+} else {
+    chomp($oldid= <T>);
+    close T or die $!;
+    print "Tape is currently labelled \`$oldid'\n" or die $!;
+    die "$0: use -f to force relabelling\n" unless $force;
+}
+
+open T,'>TAPEID' or die $!;
+print T "$newid\n" or die $!;
+close T or die $!;
+
+writetapeid($newid,'tapeid set manually');
+rewind_raw();
+
+print "Labelled tape \`$newid'\n" or die $!;
+exit 0;

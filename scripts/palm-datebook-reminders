@@ -1,0 +1,156 @@
+#!/usr/bin/perl
+
+# Copyright 2003 Ian Jackson <ian@chiark.greenend.org.uk>
+#
+# This script and its documentation (if any) are free software; you
+# can redistribute it and/or modify them under the terms of the GNU
+# General Public License as published by the Free Software Foundation;
+# either version 3, or (at your option) any later version.
+# 
+# chiark-named-conf and its manpage are distributed in the hope that
+# it will be useful, but WITHOUT ANY WARRANTY; without even the
+# implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR
+# PURPOSE.  See the GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, consult the Free Software Foundation's
+# website at www.fsf.org, or the GNU Project website at www.gnu.org.
+
+use Palm::PDB;
+use Palm::Datebook;
+use Time::Local;
+use POSIX;
+
+$us= $0 =~ m,[^/]+$, ? $& : $0;
+
+$detail= 86400*2;
+$lookforward= 86400*(7*4+1);
+# run at 15:00 daily
+
+sub setfilename($) {
+    die "$us: only one filename at a time please\n" if defined $filename;
+    $filename= $_[0];
+}
+
+while (@ARGV) {
+    $_= shift @ARGV;
+    if (m,^(?:\-t)?(\d+)/(\d+)$,) {
+	($detail,$lookforward)=($1+0,$2+0);
+    } elsif (m,^[./],) {
+	setfilename($_);
+    } elsif (m/^\-f/) {
+	setfilename($');
+    } else {
+	die "$us: unknown argument/option \`$_'\n";
+    }
+}
+
+$filename= "DatebookDB.pdb" if !defined $filename;
+
+defined($now= time) or die $!;
+stat $filename or die "$us: $filename: $!\n";
+$backuptime= (stat _)[10];
+
+$pdb = new Palm::PDB or die $!;
+$pdb->Load($filename) or die $!;
+
+
+
+foreach $record (@{ $pdb->{records} }) {
+    if ($record->{start_hour} != 255) {
+	$timestr= sprintf("%02d:%02d-%02d:%02d",
+			  $record->{start_hour},
+			  $record->{start_minute},
+			  $record->{end_hour},
+			  $record->{end_minute});
+	@lt=(0, $record->{start_minute}, $record->{start_hour});
+    } else {
+	@lt=(0, 0, 9);
+	$timestr= "           ";
+    }
+    if ($record->{repeat}{type}) {
+	$timestr= "onwards    ";
+    }
+    
+    push @lt, $record->{day}, $record->{month}-1,  $record->{year}-1900;
+    defined($ettt= timelocal @lt) or die $!;
+
+    next if ($ettt < $now - 86400 ||
+	     $ettt > $now + $lookforward);
+
+    @lt2= localtime($ettt) or die $!;
+    defined($dowstr= strftime "%a", @lt2) or die $!;
+
+    $datestr= sprintf("%04d-%02d-%02d",
+		      $record->{year},
+		      $record->{month},
+		      $record->{day});
+    
+    $timesortkey= "$datestr $timestr";
+    $evhead= "$datestr $dowstr $timestr";
+
+    $desc= $record->{description};
+    $desc =~ s/\x93/\~/g;
+    $desc =~ s/\xa3/L/g;
+    $desc =~ s/[^\n -\176]/ sprintf "\\x%02x", ord $& /eg;
+    $desc =~ s/^ +//;
+    $desc =~ s/\n+$//;
+    $desc .= "\n";
+
+    if ($desc =~ m/^(.{0,51})\n/) {
+	$descsumm= $1;
+    } elsif ($desc =~ m/^.{48}/) {
+	$descsumm= $&.'...';
+    } else {
+	$descsumm= " --- no description ?! ---";
+    }
+    $kind= $ettt < $now + $detail ? 'detail' : 'forward';
+
+    push @{ $events{$kind} }, {
+	TSK => $timesortkey,
+	Headline => sprintf("%s  %s", $evhead, $descsumm),
+	Desc => $desc
+	};
+}
+
+sub sectline_detail(){ return "Imminent events"; }
+sub sectline_forward(){ return "Forthcoming events"; }
+
+sub headline(){
+    printf("%s\n", $ev->{Headline})
+	or die $!;
+}
+
+sub print_forward(){ headline(); }
+sub print_detail(){
+    print "\n" or die $!;
+    headline();
+    $_= $ev->{Desc};
+    s/^/    /gm;
+    print $_ or die $!;
+}
+
+foreach $kind (qw(detail forward)) {
+    $sectline= &{"sectline_$kind"};
+    printf("%s\n%s\n",
+	   $sectline,
+	   '-'x(length $sectline))
+	or die $!;
+    if (!@{ $events{$kind} }) {
+	printf("None scheduled.\n")
+	    or die $!;
+    }
+    foreach $ev (sort { $a->{TSK} cmp $b->{TSK} } @{ $events{$kind} }) {
+	&{"print_$kind"};
+    }
+    print "\n" or die $!;
+}
+
+@lt2= localtime $backuptime or die $!;
+defined ($syncstr= strftime "%Y-%m-%d %a %H:%M", @lt2) or die $!;
+
+print("Date of last synch: $syncstr\n".
+      "Events entered on PDA after this date are omitted.\n")
+    or die $!;
+       
+close STDOUT or die $!;

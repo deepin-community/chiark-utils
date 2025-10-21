@@ -1,0 +1,37 @@
+#!/bin/sh
+# loaded
+# Entry point for sysadmin to state that we've loaded a tape
+#
+# This file is part of chiark backup, a system for backing up GNU/Linux and
+# other UN*X-compatible machines, as used on chiark.greenend.org.uk.
+#
+# chiark backup is:
+#  Copyright (C) 1997-1998,2000-2001,2007
+#                     Ian Jackson <ian@chiark.greenend.org.uk>
+#  Copyright (C) 1999 Peter Maydell <pmaydell@chiark.greenend.org.uk>
+#
+# This is free software; you can redistribute it and/or modify it under the
+# terms of the GNU General Public License as published by the Free Software
+# Foundation; either version 3, or (at your option) any later version.
+#
+# This is distributed in the hope that it will be useful, but WITHOUT ANY
+# WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+# FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
+# details.
+#
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, consult the Free Software Foundation's
+# website at www.fsf.org, or the GNU Project website at www.gnu.org.
+
+set -e
+cd /var/lib/chiark-backup
+
+if test -f "/etc/chiark-backup/tape.$1"
+then
+	echo "$1" >really-TAPEID
+	echo "Will assume tape is $1 unless I discover otherwise."
+else
+	if [ "x$1" != x ]; then echo "Tape $1 not found."; fi
+	echo "Will only use tape if it has a TAPEID."
+	rm -f really-TAPEID
+fi

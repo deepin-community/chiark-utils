@@ -1,0 +1,76 @@
+# This is an example /etc/sync-accounts for Linux.
+
+lockpasswd runvia vipw
+lockgroup runvia vigr
+logfile /var/log/sync-accounts
+
+uidmin 1000
+uidmax 29999
+homebase /u2
+defaultshell /bin/bash
+
+host sfere
+getpasswd ssh sfere -l ian cat /etc/passwd
+createuser
+user richardk remote=richard
+addhere
+
+#host snoopy
+#getpasswd ssh snoopy -l ian cat /etc/passwd
+#getshadow ssh snoopy -l ian really cat /etc/shadow
+#createuser
+#user christi
+#addhere
+
+host khem
+getpasswd rsh khem -l ian cat /etc/passwd
+createuser
+user andrewm
+addhere
+
+host chiark
+getpasswd cat /var/lib/sync-accounts/chiark/passwd
+getshadow cat /var/lib/sync-accounts/chiark/shadow
+getgroup cat /var/lib/sync-accounts/chiark/group
+createuser sync-accounts-createuser-chiark2davenant
+sameuid
+user richard
+user ian
+
+user ijackson
+user owend
+user damerell
+user jonr
+user duncanm
+user siona
+user dans
+user marisal
+user vivienh
+user davidr
+user fanf
+user wednsday
+user emmaburt
+user eleanorb
+user stevee
+user diziet
+user matthewv
+user mattheww
+user sgtatham
+user jdamery
+user twomack
+user aldabra
+user janetmck
+user johns
+user andreww
+user sbleas
+user clareb
+user chrisj
+user beckyc
+addhere
+
+nogroup *
+nocreateuser
+nousergroups
+user root
+
+end

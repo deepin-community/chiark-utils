@@ -1,0 +1,13 @@
+/			dump	kadath
+
+/usr			dump	kadath
+/var			dump	kadath
+/home			dump	kadath
+
+/var			dump	khem
+/home			dump	khem
+/			dump	khem
+
+/usr			dump	khem
+
+end

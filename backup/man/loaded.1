@@ -1,0 +1,41 @@
+.TH BACKUP-LOADED "1" "July 2003" "Debian" "Chiark-backup"
+.SH NAME
+backup-loaded \- tell the chiark-backup system what to do with a new tape
+.SH SYNOPSIS
+.B backup-loaded
+.I [TAPEID]
+.br
+.SH DESCRIPTION
+backup-loaded: this tells the scripts that a currently unlabelled tape
+should be treated as tape X: eg:
+.br
+\fBbackup-loaded b3\fP
+.br
+will cause it to treat it as tape `b3'.  NB: this won't override the
+TAPEID label written on the tape; it's just for use with previously
+unused tapes.  This applies only to the next time the backup scripts
+are invoked.  You can say just
+.br
+\fBbackup-loaded\fP
+.br
+to go back to the default behaviour, which is to fail if the tape has
+no TAPEID.
+.SH OPTIONS
+.TP
+.BR TAPEID
+Treat the tape as label TAPEID
+.SH FILES
+.TP
+.I /etc/chiark-backup/settings.pl
+Configuration file for the whole of chiark-backup
+.P
+.SH AUTHOR
+This Manual page was written by Matthew Vernon <matthew@debian.org> but 
+may be used by anyone.
+.SH COPYRIGHT
+Copyright (C) 1997-1998,2000-2001 Ian Jackson <ian@chiark.greenend.org.uk>
+.br
+Copyright (C) 1999 Peter Maydell <pmaydell@chiark.greenend.org.uk>
+.br
+This is free software; see the source for copying conditions.  There is NO
+warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.

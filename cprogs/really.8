@@ -1,0 +1,175 @@
+.TH really 8 2001-10-21 chiark-backup
+.SH NAME
+really \- gain privilege or run commands a different user
+.SH SYNOPSIS
+.B really
+.RI [ options ]
+.RI [ "command args... " ]
+.SH DESCRIPTION
+.B really
+checks whether the caller is allowed, and if it is it changes its uids
+and gids (and perhaps root directory) according to the command line
+options and executes the specified command.
+.PP
+If no options are specified, the uid will be set to 0 and the gids
+and root directory will be left unchanged.
+.PP
+If no command is specified,
+.B really
+will run
+.BR "$SHELL -i" .
+.PP
+A caller is allowed if it has write access to
+.BR /etc/inittab
+and is also member of the group
+.BR root .
+This is most easily achieved by making inittab group-writeable by some
+suitable group containing all the appropriate users, and making
+.B /etc/inittab
+group-owned by that group and group-writeable.  The root group is
+perhaps a good choice if it isn't being used for anything else.
+.SH OPTIONS
+.TP
+\fB-u\fR \fIusername\fR | \fB--user\fR \fIusername\fR
+Sets the uid, gid, and supplementary group list, according to
+.IR username 's
+entry in the password and group databases.
+.TP
+\fB-i\fR \fIusername\fR | \fB--useronly\fR \fIusername\fR
+Sets only the uid according to
+.IR username 's
+entry in the password database.
+.TP
+\fB-I\fR \fIuid\fR | \fB--uidonly\fR \fIuid\fR
+Sets the uid to the numeric value
+.I uid
+(which need not correspond to any existing user in the password
+database).
+.TP
+\fB-g\fR \fIgroupname\fR | \fB--group\fR \fIgroupname\fR
+.I groupname
+is looked up in the group database and its gid is appended to the
+process's supplementary groups list.  If this is the first gid
+specified it will also be set as the primary gid.
+.TP
+\fB-G\fR \fIgid\fR | \fB--gid\fR \fIgid\fR
+.I gid
+is appended to the process's supplementary groups list.
+.RI ( gid
+need not correspond to any existing group in the group database.)  If
+this is the first gid specified it will also be set as the primary
+gid.
+.TP
+\fB-z\fR | \fB--groupsclear\fR
+Clears the process's supplementary groups list.  When using this
+option you must also specify
+.B -g
+or
+.BR -G .
+The process's groups will then be exactly those specified.  The
+relative position of
+.B -z
+in the argument list is not relevant.
+.TP
+\fB-R\fR \fIroot-dir\fR | \fB--chroot\fR \fIroot-dir\fR
+The program will have its root directory set to
+.IR root-dir .
+
+.BR "Do not use this option unless you know what you are doing" :
+Unlike chroot(8), the current working directory will remain unchanged.
+This means that if the current directory isn't underneath the
+specified new root, the program will still be able to access files
+outside the new root by using relative pathnames.  If this isn't
+what you want, please use the chroot utility instead.
+.TP
+.B \-\-
+Indicates the end of the options.  The next argument (if present) will
+be interpreted as the command name, even if it starts with a hyphen.
+.SH SECURITY CONSIDERATIONS
+.B really
+is designed so that installing it setuid root is extremely unlikely to
+compromise the security of any system.  It will check using
+.BR access (2)
+whether the real user is allowed to write to
+.B /etc/inittab
+and if this check fails
+.B really
+will exit without even attempting to parse its command line.
+.PP
+.B really
+is
+.B not
+designed to be resistant to malicious command line arguments.  Do not
+allow untrusted processes to pass options to really, or to specify the
+command to be run.  Whether it is safe to allow relatively untrusted
+processes to pass options to the command which is to be run depends on
+the behaviour of that command and its security status.
+.PP
+Attempting to use
+.B really
+to drop privilege is dangerous unless the calling environment is very
+well understood.  There are many inherited process properties and
+resources which might be used by the callee to escalate its privilege
+to that of the (root-equivalent) caller.  For this function, it is
+usually better to use
+.B userv
+if possible.
+.SH ENVIRONMENT
+.B really
+does not manipulate the environment at all.  The calling program is
+run in exactly the same environment as the caller passes to
+.BR really .
+In particular,
+.B really
+will not add
+.B sbin
+directories to
+.B PATH
+so
+.BR really -enabled
+accounts will usually need to have these directories on their
+configured
+.B PATH
+to start with.
+.PP
+.B SHELL
+is used to find the default shell to use in interactive mode (ie, when
+no command is specified).
+.SH AUTHOR
+This version of
+.B really
+was written by Ian Jackson <ian@chiark.greenend.org.uk>.
+.PP
+It and this manpage are Copyright (C) 1992-5,2004,2013 Ian Jackson
+<ian@chiark.greenend.org.uk>.
+.PP
+.B really
+is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License as
+published by the Free Software Foundation; either version 3,
+or (at your option) any later version.
+.PP
+.B really
+is distributed in the hope that it will be useful, but
+WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+.PP
+You should have received a copy of the GNU General Public
+License along with this file; if not, consult the Free Software
+Foundation's website at www.fsf.org, or the GNU Project website at
+www.gnu.org.
+.SH AVAILABILITY
+.B really
+is currently part of
+.B chiark-utils
+and is available for download from
+ftp.chiark.greenend.org.uk in /users/ian/chiark-utils/,
+in source and pre-compiled binary form, and also from Ian Jackson's
+cvsweb.
+.SH "SEE ALSO"
+.BR userv (1),
+.BR access (2),
+.BR setresuid (2),
+.BR setresgid (2),
+.BR setgroups (2)

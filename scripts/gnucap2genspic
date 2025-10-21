@@ -1,0 +1,109 @@
+#!/usr/bin/perl
+#   gnucap2genspic - Copyright 2004 Ian Jackson - see below
+#
+# Reads the output from gnucap and outputs a `genspic' file
+# for use with genspic2gnuplot.  Takes no arguments or options.
+#
+# Limitations
+#
+#  Only Freq (.AC) and Time (.TRAN) plots have been tested.  If
+#   other types go wrong they can probably be fixed by adding code for
+#   them to startplot().
+#
+#  Displaying voltages and currents on the same .TRAN graph won't work
+#   well because they currently have to have the same Y scale.  This
+#   could be fixed by assigning carefully to $mmm in startplot().
+#
+#  This whole scheme is very clumsy.  There should be a driver program
+#  with command-line option parsing.
+
+# This program and its documentation are free software; you can
+# redistribute them and/or modify them under the terms of the GNU
+# General Public License as published by the Free Software Foundation;
+# either version 3, or (at your option) any later version.
+# 
+# This program and its documentation are distributed in the hope that
+# they will be useful, but WITHOUT ANY WARRANTY; without even the
+# implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR
+# PURPOSE.  See the GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, consult the Free Software Foundation's
+# website at www.fsf.org, or the GNU Project website at www.gnu.org.
+
+die if @ARGV;
+
+%facttimes= qw(f 1e-15
+	       p 1e-12
+	       n 1e-9
+	       u 1e-6
+	       m 1e-3
+	       K 1e3
+	       Meg 1e6
+	       G 1e9
+	       T 1e12);
+
+sub startplot () {
+    $logxy= 0;
+    for ($yn=1; $yn<=$#columns; $yn++) {
+	$mmm[$yn]= 'y';
+    }
+    if ($kind eq 'Freq') {
+	$logxy= 1;
+	for ($yn=1; $yn<=$#columns; $yn++) {
+	    die unless $columns[$yn] =~ m/.*([MP])\(\d+\)$/i;
+	    $mmm[$yn]= 'y2' if uc $1 eq 'P';
+	}
+    }
+    printf "S %s %d", $cplot, $logxy or die $!;
+    for ($yn=1; $yn<=$#columns; $yn++) {
+	printf " %s:%s", $mmm[$yn], $columns[$yn] or die $!;
+    }
+    print "\n" or die $!;
+}
+sub endplot () {
+    return unless defined $kind;
+    print "T\n" or die $!;
+}
+
+$readahead= <STDIN>;
+for (;;) {
+    $linesofar= $readahead;
+    for (;;) {
+	$readahead= <STDIN>;
+	last unless $readahead =~ s/^\+//;
+	die unless length $linesofar;
+	$linesofar =~ s/\n$//;
+	$linesofar .= $readahead;
+    }
+    $_= $linesofar;
+    last unless length;
+    s/\s+$//;
+    
+    if (m/^\#(\w+)/) {
+	endplot();
+	$kind= $1;
+	@columns= split /\s+/;
+	$cplot= $kind;
+	startplot();
+	next;
+    } elsif (!defined $kind) {
+	next;
+    } elsif (s/^\s+//) {
+	@numbers= split /\s+/;
+	map {
+	    if (m/^(\-?\d+\.\d*)([A-Za-z]+)$/) {
+		die "factor $2" unless exists $facttimes{$2};
+		$_= $1*$facttimes{$2};
+	    }
+	} @numbers;
+	print "D @numbers\n" or die $!;
+    } else {
+	die "$_ ?";
+    }
+}
+die "no plots" unless defined $kind;
+endplot();
+print "F\n" or die $!;
+
+# $Id: gnucap2genspic,v 1.4 2007-09-21 21:21:15 ianmdlvl Exp $

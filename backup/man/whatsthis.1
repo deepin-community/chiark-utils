@@ -1,0 +1,37 @@
+.TH BACKUP-WHATSTHIS "1" "July 2003" "Debian" "Chiark-backup"
+.SH NAME
+backup-whatsthis \- read an id off a tape and display it
+.SH SYNOPSIS
+.B backup-whatsthis
+.RB [\| --list
+.RI [\| n \|]]
+.br
+.SH DESCRIPTION
+`backup-whatsthis' is a simple script to display the TAPEID of the current
+tape and optionally list its contents.  This script is a bit of a hack
+and may not be fully reliable.
+.SH OPTIONS
+.TP
+.B \--list
+.RI [\| n \|]
+Print TAPEID then list archive n (default 0). Note that archives are
+numbered from zero.
+.SH FILES
+.TP
+.I /etc/chiark-backup/settings.pl
+Configuration file for the whole of chiark-backup
+.P
+.SH BUGS
+`backup-whatsthis' is currently hardwired to assume `cpio' type backups
+when listing; it could be trivially hardwired to assume `zafio' 
+or with slightly more effort it could be done properly :->.
+.SH AUTHOR
+This Manual page was written by Matthew Vernon <matthew@debian.org> but 
+may be used by anyone.
+.SH COPYRIGHT
+Copyright (C) 1997-1998,2000-2001 Ian Jackson <ian@chiark.greenend.org.uk>
+.br
+Copyright (C) 1999 Peter Maydell <pmaydell@chiark.greenend.org.uk>
+.br
+This is free software; see the source for copying conditions.  There is NO
+warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.

@@ -1,4 +1,127 @@
 #!/usr/bin/make -f
 
+SHELL=/bin/bash
+
+subdirs_build_arch=	cprogs
+subdirs_nobuild=backup sync-accounts scripts fishdescriptor
+package=	chiark-utils
+packages_indep=	chiark-backup chiark-scripts
+packages_arch=	chiark-rwbuffer chiark-really chiark-utils-bin
+packages=	$(packages_indep) $(packages_arch)
+
+cwd=	$(shell pwd)
+d=	$(cwd)/debian
+t=	$d/tmp
+
+D_BUILDFLAGS=DEB_BUILD_MAINT_OPTIONS=future=+lfs dpkg-buildflags
+
+makebuildargs := OPTIMISE= DEBUG= \
+ CMDLINE_CFLAGS="$(shell $(D_BUILDFLAGS) --get CFLAGS)" \
+ CMDLINE_CPPFLAGS="$(shell $(D_BUILDFLAGS) --get CPPFLAGS) -D_TIME_BITS=64 -D_FILE_OFFSET_BITS=64" \
+ CMDLINE_LDFLAGS="$(shell $(D_BUILDFLAGS) --get LDFLAGS)"
+
 %:
 	dh $@
+
+override_dh_auto_build:
+	set -e; for s in $(subdirs_build_arch); do \
+		dh_auto_build --sourcedirectory=$$s -- all $(makebuildargs); \
+	done
+
+
+override_dh_auto_clean:
+	rm -f build
+	set -e; for s in $(subdirs_build_arch); do \
+		$(MAKE) -C $$s -i distclean || \
+		$(MAKE) -C $$s -f Makefile.in distclean; \
+	done
+	rm -rf debian/sv-*
+
+override_dh_auto_install:
+	# The ownership information will be reset later to root:root in
+	# the `dpkg-deb` call, so the actual ownership here is of no
+	# consequence as long as we are allowed to perform the action.
+	#
+	# Chown'ing from your own user/group to itself is always allowed,
+	# so we pass that via id -u/-g.
+	set -e; for s in $(subdirs_build_arch) $(subdirs_nobuild); do \
+		$(MAKE) -C $$s install install-docs install-examples \
+			prefix=$t/$$s/usr \
+			etcdir=$t/$$s/etc \
+			varlib=$t/$$s/var/lib \
+			mandir=$t/$$s/usr/share/man \
+			SYSTEM_USER=$$(id -u) \
+			SYSTEM_GROUP=$$(id -g); \
+	done
+	#
+	mv $t/cprogs $d/chiark-utils-bin
+	#
+	cp -a debian/tmp/fishdescriptor/* debian/tmp/scripts/.
+	cp -a debian/tmp/sync-accounts/* debian/tmp/scripts/.
+	rm -r debian/tmp/sync-accounts
+	mv debian/tmp/scripts debian/chiark-scripts
+	mv debian/tmp/backup debian/chiark-backup
+
+	# Move all packages created so far up to debian/<pkg>, where the dh_*
+	# expects to find them now that we are done renaming things.
+	set -e; for p in $(dh_listpackages); do \
+		[ ! -d $t/$$p ] || mv $t/$$p debian/$$p ; \
+	done
+
+	# Last bit of moving things around manually, where the debhelper tools
+	# will not trivially do it (at least, without stuff like `dh-exec`)
+
+	install -d debian/chiark-rwbuffer/usr/bin
+	install -d debian/chiark-rwbuffer/usr/share/man/man1
+	cd debian/chiark-utils-bin/usr/bin && \
+		mv readbuffer writebuffer $d/chiark-rwbuffer/usr/bin/
+	cd debian/chiark-utils-bin/usr/share/man/man1 && \
+		mv readbuffer.1 writebuffer.1 $d/chiark-rwbuffer/usr/share/man/man1/
+
+	install -d debian/chiark-backup/usr/share/man/man1
+	cp backup/man/*.1 debian/chiark-backup/usr/share/man/man1/
+	cd debian/chiark-backup/usr/share/man/man1 && \
+		for m in *.1; do \
+			mv "$$m" backup-"$$m"; \
+		done
+	cp \
+ debian/chiark-backup/usr/share/doc/chiark-backup/examples/chiark/settings.sh \
+ debian/chiark-backup/etc/chiark-backup/settings.sh
+	#
+	install -d debian/chiark-really/usr/sbin
+	install -d debian/chiark-really/usr/share/man/man8
+	cd $d/chiark-utils-bin/usr/sbin && \
+		mv really $d/chiark-really/usr/sbin/
+	cd $d/chiark-utils-bin/usr/share/man/man8 && \
+		mv really.8 $d/chiark-really/usr/share/man/man8/
+	rm	debian/chiark-utils-bin/usr/sbin/trivsoundd \
+		debian/chiark-utils-bin/usr/share/man/man8/trivsoundd.8
+	rmdir	debian/chiark-utils-bin/usr/sbin
+
+	# We are not installing these. To avoid dh_missing complaining,
+	# lets just remove them (Could also be moved to debian/not-installed)
+	rm -fr debian/tmp/fishdescriptor/usr/lib/python2.7
+	rm -fr debian/tmp/fishdescriptor/usr/lib/python3
+	rm -f debian/tmp/fishdescriptor/usr/bin/fishdescriptor
+
+
+override_dh_shlibdeps:
+	dh_shlibdeps -p chiark-rwbuffer
+	dh_shlibdeps -p chiark-really
+
+	set -e; for f in $d/chiark-utils-bin/usr/bin/*; do \
+		fn="$$f"; if test -L "$$f"; then fn=$$(realpath "$$fn"); fi; \
+		case "$$fn" in \
+		*/xbatmon-simple|*/xduplic-copier) \
+					d=Suggests	;; \
+		*/watershed|*/summer|*/cgi-fcgi-interp|*/prefork-interp) \
+					d=Recommends	;; \
+		*)			d=Depends	;; \
+		esac; \
+		a="$$a -d$$d $$f"; \
+	    done; set -x; \
+	    dh_shlibdeps -p chiark-utils-bin -- $$a
+
+
+execute_after_dh_fixperms:
+	chmod u+s,o-x debian/chiark-really/usr/sbin/really

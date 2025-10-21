@@ -1,0 +1,3 @@
+# Python 3 is needed for fishdescriptor; this is documented in
+# the Description and in the Suggests.
+python-package-missing-depends-on-python

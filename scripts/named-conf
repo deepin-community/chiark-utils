@@ -1,0 +1,1175 @@
+#!/usr/bin/perl -w
+# This is chiark-named-conf, which is Copyright 2002 Ian Jackson.
+#
+# chiark-named-conf and its manpage are free software; you can
+# redistribute it and/or modify them under the terms of the GNU
+# General Public License as published by the Free Software Foundation;
+# either version 3, or (at your option) any later version.
+# 
+# chiark-named-conf and its manpage are distributed in the hope that
+# it will be useful, but WITHOUT ANY WARRANTY; without even the
+# implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR
+# PURPOSE.  See the GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, consult the Free Software Foundation's
+# website at www.fsf.org, or the GNU Project website at www.gnu.org.
+
+use strict;
+use IO::File;
+use Data::Dumper;
+use POSIX;
+use Fcntl qw(:DEFAULT :flock);
+
+# bastard Perl wants me to do this now !
+sub loarg();
+sub soarg();
+sub usageerr ($);
+sub cfg_fail ($);
+sub read_config ($);
+sub qualify ($);
+sub bad_modifiers ($);
+sub zone_conf ($$$$$@);
+sub set_output($);
+sub progress ($$);
+sub verbose ($);
+sub process_zones (@);
+sub zone_warning ($$);
+sub zone_warnmore ($);
+sub zone_check_full ();
+sub zone_reset();
+sub zone_investigate();
+sub zone_check_nsrrset ($$$$);
+sub zone_ns_name ($$);
+sub zone_server_queue ($$$$$);
+sub zone_server_addr ($$$$$);
+sub zone_check_soa ($$$$);
+sub zone_consistency();
+sub zone_servers_ok ();
+sub zone_consistency_set ($%);
+sub zone_check_local ();
+sub zone_servers_simplefind ();
+sub zone_server_simple ($$$);
+sub zone_style ($$);
+sub mail_zone_before ();
+sub mail_zone_after ();
+sub pmail ($);
+sub ptime ($);
+sub mail_zone_mail ();
+sub zone_output ();
+sub output_files ();
+sub debug_dump ($);
+sub debug_trace ($);
+sub has_suffix_of ($$);
+sub lookup ($$$$);
+sub dig (&$$$);
+sub domain_canon ($$);
+
+use vars qw($quis $stdout_fh $stderr_fh
+	    $mode $doall $domail
+	    $etcfile $where
+	    $debug $needglue $localonly $repeat $verbosity
+	    $admin $mail_state_dir $mail_max_warnfreq
+	    $progress_fh $warn_fh $modifiers
+	    %group2modcmd %group2used);
+
+$|=1;
+$quis= $0; $quis =~ s,.*/,,;
+
+$mode= '';
+$doall= 0;
+$etcfile= "/etc/bind/chiark-conf-gen.zones";
+$where= '<built-in>';
+$debug= 0;
+$needglue= 1;
+$localonly= 0;
+$verbosity= 2;
+$admin=''; $mail_state_dir=''; $mail_max_warnfreq= 50;
+$repeat= 0;
+$domail= '';
+$modifiers= '';
+$group2modcmd{'foreign'}= '$!*@?';
+$group2used{'foreign'}= 1;
+
+($progress_fh= $stdout_fh= new_from_fd IO::Handle(1,'w') and
+ $warn_fh= $stderr_fh = new_from_fd IO::Handle(2,'w'))
+    or die "$quis: setup standard filehandles: $!\n";
+    
+use vars qw($dig_owner $dig_type $dig_rdata);
+
+while (@ARGV && $ARGV[0] =~ m/^\-/) {
+    $_= shift @ARGV;
+    if (s/^\-\-//) {
+	last if m/^$/;
+	if (m/^(yes|no|force)$/) { m/^./; $mode= $&; $domail=''; }
+	elsif (m/^nothing$/) { $mode= 'x'; $domail=''; }
+	elsif (m/^mail\-(first|middle|final|final\-test)$/) {
+	    $mode='n';
+	    $domail=$1;
+	}
+	elsif (m/^all$/) { $doall=1; }
+	elsif (m/^config$/) { $etcfile= loarg(); $where= '--config option'; }
+	elsif (m/^glueless$/) { $needglue=0; }
+	elsif (m/^localonly$/) { $localonly=1; }
+	elsif (m/^quiet$/) { $verbosity--; }
+	elsif (m/^repeat$/) { $repeat=1; }
+	elsif (m/^verbose$/) { $verbosity++; }
+	else { usageerr("unknown option --$_"); }
+    } else {
+	s/^\-//;
+	last if m/^$/;
+	while (m/^./) {
+	    if (s/^[ynf]//) { $mode=$&; $domail=''; }
+	    elsif (s/^A//) { $doall=1; }
+	    elsif (s/^C//) { $etcfile= soarg(); $where= '-C option'; }
+	    elsif (s/^D//) { $debug++; }
+	    elsif (s/^g//) { $needglue=0; }
+	    elsif (s/^l//) { $localonly=1; }
+	    elsif (s/^m(\w+)(\W+)$//) {
+		my ($g,$m) = ($1,$2);
+		$group2modcmd{$g}=$m;
+		usageerr("modifiers $m for group $g: $@") if bad_modifiers($m);
+	    }
+	    elsif (s/^q//) { $verbosity--; }
+	    elsif (s/^r//) { $repeat=1; }
+	    elsif (s/^v//) { $verbosity++; }
+	    else { usageerr("unknown option -$&"); }
+	}
+    }
+}
+
+sub loarg() { usageerr("missing option value") if !@ARGV; return shift @ARGV; }
+sub soarg() { my ($rv); $rv=$_; $_=''; return length $rv ? $rv : loarg(); }
+
+usageerr("-q may be specified at most twice") if $verbosity<0;
+usageerr("-v may be specified at most once") if $verbosity>3;
+usageerr("-D may be specified at most twice") if $debug>2;
+usageerr("must specify either -f|-y|-n or zones (and not both)")
+    if !!$mode == !!@ARGV && !$domail;
+
+sub usageerr ($) {
+    die <<END;
+$_[0]
+
+usage: chiark-named-conf [options] -f|-y|-n|<zone>...
+operation modes:
+ -f --force   install without checking
+ -y --yes     check and install
+ -n --no      check only (configured zones)
+ --nothing    list zones only
+ --mail-*     send mail about broken zones (see manpage)
+ <zone> ...   check only (specified zones, even unconfigured ones)
+additional options:
+ -A --all       report on zones marked ? (ones we know are broken)
+ -D             debug $quis (does not help debug your DNS config)
+ -g --glueless  do not warn about any glueless referrals (not recommended)
+ -l --localonly full checks only on zones which we primary
+ -q --quiet     no output for OK zones
+ -r --repeat    repeat warnings for all sources of imperfect data
+ -v --verbose   extra verbose info about each zone
+ -C|--config <DIR/FILE  use FILE as default config and DIR as default dir
+
+chiark-named-conf is Copyright 2002 Ian Jackson.  It is Free software, under
+the GNU General Public License, and you are welcome to change it and/or
+distribute copies under certain conditions.  There is ABSOLUTELY NO WARRANTY.
+END
+}
+
+cfg_fail("config filename $etcfile should not be directory")
+    if $etcfile =~ m,/$,;
+
+use vars qw($default_dir);
+$default_dir= $etcfile =~ m,^.*/, ? $& : './';
+
+use vars qw($slave_dir $slave_prefix $slave_suffix);
+$slave_dir= 'slave';
+$slave_prefix= '';
+$slave_suffix= '';
+
+use vars qw(@self_ns @self_soa @self_addr @forbid_addr @forbid_slave
+	    @conv_glueless @indirect_glue);
+@self_ns= @self_soa= @self_addr= @forbid_addr= @forbid_slave= @indirect_glue= ();
+@conv_glueless= qw(in-addr.arpa ip6.arpa ip6.int);
+
+use vars qw(%zone_cfg @zone_cfg_list);
+%zone_cfg= ();
+@zone_cfg_list= ();
+
+use vars qw($output $default_output %output_contents);
+$output= '';
+$default_output= '';
+%output_contents= ();
+
+use vars qw($check $install);
+$check= $mode !~ m/^[fx]/;
+$install= $mode =~ m/^[yf]/;
+
+read_config($etcfile);
+debug_dump('@zone_cfg_list %zone_cfg');
+process_zones(!@ARGV ? @zone_cfg_list : @ARGV);
+debug_dump('%output_contents');
+output_files() if $install;
+
+$stdout_fh->close or die "$quis: write messages to stdout: $!\n";
+$stderr_fh->close or die "$quis: write messages to stderr: $!\n";
+exit 0;
+
+#-------------------- configuration reading
+
+sub cfg_fail ($) { die "$quis: $where:\n $_[0]\n"; }
+
+sub read_config ($) {
+    my ($if) = @_;
+    my ($fh,$z,@self,$before,$group,
+	$mod,$dir,$prefix,$suffix,$subfile,$lprefix,$lsuffix,$zf);
+    local ($_);
+
+    $fh= new IO::File $if,'r';
+    unless ($fh) {
+	return if $! == &ENOENT;
+	cfg_fail("open $if:\n $!");
+    }
+    $before= '';
+    for (;;) {
+	if (!defined($_= <$fh>)) {
+	    cfg_fail("read config file $if:\n $!") if $fh->error();
+	    last;
+	}
+	chomp; s/\s+$//;
+	if (s/\\$//) { $before.= $_; next; }
+	$_= $before.$_;
+	$before= '';
+	s/^\s+//;
+	$where= "$if:$.";
+	next if m/^\#/;
+	last if m/^end$/;
+	next unless m/\S/;
+	if (m/^self(\-ns|\-soa|)\s+(\S.*\S)/) {
+	    @self= split /\s+/, $2;
+	    @self_ns= @self if $1 ne '-soa';
+	    @self_soa= @self if $1 ne '-ns';
+	} elsif (m/^serverless\-glueless\s+(\S.*\S)/) {
+	    @conv_glueless= split /\s+/, $1;
+	} elsif (m/^allow\-indirect\-glue\s+(\S.*\S)/) {
+	    @indirect_glue= split /\s+/, $1;
+	} elsif (m/^self\-addr\s+([0-9. \t]+)/) {
+	    @self_addr= split /\s+/, $1;
+	} elsif (m/^forbid\-addr(?:\s+([0-9. \t]+))?/) {
+	    @forbid_addr= defined $1 ? split /\s+/, $1 : ();
+	} elsif (m/^forbid\-slave(?:\s+([0-9. \t]+))?/) {
+	    @forbid_slave= defined $1 ? split /\s+/, $1 : ();
+	} elsif (m,^
+		 primary\-dir (\W*)
+		 \s+ (\S+)/([^/ \t]*)
+		 (?: \s+ ([^/ \t]*) (?: (/.+) )?
+		  )?
+		 $,x) {
+	    ($mod, $dir, $prefix, $suffix, $subfile) =
+		($1,qualify($2),$3,$4,$5);
+	    cfg_fail("modifiers $mod for directory $dir: $@")
+		if bad_modifiers($mod);
+	    $suffix= '' if !defined $suffix;
+	    $subfile= '' if !defined $subfile;
+	    $suffix= '_db' if !length $suffix && !length $subfile;
+	    if (-d "$dir/$prefix") { $dir.='/'; $dir.=$prefix; $prefix=''; }
+	    opendir D, $dir or cfg_fail("open primary-dir $dir:\n $!");
+	    $lprefix= length $prefix; $lsuffix= length $suffix;
+	    while (defined($_= readdir D)) {
+		next if m/^\./ && !$lprefix;
+		next unless length > $lprefix+$lsuffix;
+		next unless substr($_,0,$lprefix) eq $prefix;
+		next unless substr($_,length($_)-$lsuffix) eq $suffix;
+		$z= substr($_,$lprefix,length($_)-($lprefix+$lsuffix));
+		$zf= $dir.'/'.$prefix.$z.$suffix.$subfile;
+		if (!stat $zf) {
+		    next if length $subfile && $! == &ENOENT;
+		    cfg_fail("cannot stat zonefile $zf:\n $!");
+		}
+		-f _ or cfg_fail("zonefile $zf is not a plain file");
+		zone_conf($z,'primary','p',$mod,$zf);
+	    }
+	    closedir D or cfg_fail("close primary-dir $dir:\n $!");
+	} elsif (m/^primary(\W*)\s+(\S+)\s+(\S+)$/) {
+	    zone_conf($2,'primary','p',$1,qualify($3));
+	} elsif (m/^published(\W*)\s+(\S+)\s+([0-9.\t]+)$/) {
+	    zone_conf($2,'published','s',$1,'',$3);
+	} elsif (m/^stealth(\W*)\s+(\S+)\s+([0-9. \t]+)$/) {
+	    zone_conf($2,'stealth','u',$1,'',split /\s+/, $3);
+	} elsif (m/^modifiers\s+(\W+)(?:\s+(\w+))$/) {
+	    ($mod,$group) = ($1,$2);
+	    cfg_fail("modifiers $mod for group $group: $@")
+		if bad_modifiers($mod);
+	    if (exists $group2modcmd{$group}) {
+		$mod= $group2modcmd{$group};
+		$group2used{$group}++;
+	    }
+	    $modifiers= $mod;
+	} elsif (m/^slave\-dir\s+(\S+)(?:(?:\s+(\S+))\s+(\S+))?$/) {
+	    ($slave_dir, $slave_prefix, $slave_suffix) = (qualify($1),$2,$3);
+	    $slave_prefix='' if !defined $slave_prefix;
+	    $slave_suffix='' if !defined $slave_suffix;
+	} elsif (m/^output\s+bind8\+(\S+)$/) {
+	    cfg_fail("default output may not apply to only some zones")
+		if @zone_cfg_list && length $default_output;
+	    set_output(qualify($1));
+	} elsif (m/^include\s+(\S+)$/) {
+	    read_config($1);
+	} elsif (m/^admin\s+(\S+)$/) {
+	    $admin=$1;
+	} elsif (m/^mail\-state\-dir\s+(\S+)$/) {
+	    $mail_state_dir= $1;
+	} elsif (m/^mail\-max\-warnfreq\s+(\d{1,3}(?:\.\d{0,5})?)$/) {
+	    cfg_fail("mail-max-warnfreq must be <=100") if $1>100;
+	    $mail_max_warnfreq= $1;
+	} else {
+	    cfg_fail("unknown configuration directive".
+		     " or incorrect syntax or arguments:\n".
+		     " \`$_'");
+	}
+    }
+    foreach $group (keys %group2modcmd) {
+	next if exists $group2used{$group};
+	cfg_fail("command line specifies modifier group $group".
+		 " but missing in configuration file");
+    }
+    $fh->close or cfg_fail("close config file $if:\n $!");
+}
+
+sub qualify ($) {
+    my ($i) = @_;
+    $i= "$default_dir$i" unless $i =~ m,^/,;
+    return $i;
+}
+
+sub bad_modifiers ($) {
+    local ($_) = @_;
+    if (!eval {
+	die "bad modifier $&" if m/[^!*\$\@~?]/;
+	die "repeated modifier $1" if m/(.).*\1/;
+	1;
+    }) {
+	$@ =~ s/\n//;
+	return 1;
+    }
+    return 0;
+}
+
+sub zone_conf_settings ($$) {
+    my ($cfg,$zone) = @_;
+    my ($sfx,$aref);
+    foreach $sfx (qw(self_soa self_ns self_addr forbid_addr forbid_slave
+		     conv_glueless indirect_glue)) {
+	{ no strict 'refs'; $aref= [ @$sfx ]; }
+	@$aref or cfg_fail("failed to specify $sfx before zone")
+	    if $sfx =~ m/^self/;
+	$cfg->{$sfx}= $aref;
+    }
+    foreach $sfx (qw(self_soa self_ns)) {
+	map { s/\*$/$zone/ } @{ $zone_cfg{$zone}{$sfx} };
+    }
+}
+
+sub zone_conf ($$$$$@) {
+    my ($zone,$style,$sabbr,$mod,$file,@servers) = @_;
+    $file= qualify("$slave_dir/$slave_prefix".$zone.$slave_suffix)
+	unless length $file;
+    if (!length $output) {
+	$default_output= qualify('chiark-conf-gen.bind8')
+	    unless length $default_output;
+	set_output($default_output);
+    }
+    cfg_fail("redefined zone $zone\n".
+	     " earlier definition $zone_cfg{$zone}{'where'}")
+	if exists $zone_cfg{$zone};
+    $zone_cfg{$zone}{'where'}= $where;
+    $zone_cfg{$zone}{'file'}= $file;
+    $zone_cfg{$zone}{'style_p'}= $style.$mod;
+    $zone_cfg{$zone}{'s'}= "$sabbr $mod $modifiers";
+    # p)rimary s)econdary u)npub f)oreign
+    # followed by modifiers, first per-zone, then default
+    $zone_cfg{$zone}{'servers'}= [ @servers ];
+    if ($domail) {
+	length $admin && length $mail_state_dir or
+	    cfg_fail("mailing but failed to specify admin".
+		     " or mail-state-dir before zone");
+	$zone_cfg{$zone}{'admin'}= $admin;
+	$zone_cfg{$zone}{'maildir'}= qualify($mail_state_dir);
+	$zone_cfg{$zone}{'mailmwarn'}= $mail_max_warnfreq;
+    }
+    zone_conf_settings($zone_cfg{$zone}, $zone);
+    $zone_cfg{$zone}{'output'}= $output;
+    push @zone_cfg_list, $zone;
+}
+
+sub set_output($) {
+    my ($newout) = @_;
+    $output= $newout;
+    $output_contents{$output}= '';
+}
+
+#-------------------- checking
+
+use vars qw($zone $cfg $warnings %zone_warnings);
+$warnings= 0;
+
+sub progress ($$) {
+    my ($minv,$m) = @_;
+    return if $verbosity < $minv;
+    print $progress_fh "$m\n" or die "$quis: $zone: write log: $!\n";
+}
+
+sub verbose ($) { progress(3, '    ' . $_[0]); }
+
+sub process_zones (@) {
+    my (@zones) = @_;
+    local ($zone,$cfg);
+
+    foreach $zone (@zones) {
+	if ($zone =~ m/\.$/) {
+	    zone_warning("zone specified with trailing dot -".
+			 " will not work", '');
+	}
+
+	$cfg= $zone_cfg{$zone};
+	if (!$cfg) {
+	    $cfg= {
+		'style_p' => 'foreign',
+		's' => "f $group2modcmd{'foreign'}",
+		'servers' => [ ],
+	    };
+	    zone_conf_settings($cfg, $zone);
+	}
+
+	mail_zone_before() or next
+	    if $domail;
+	zone_reset();
+	progress(1, sprintf "%-20s %s", $zone, $$cfg{'style_p'});
+	if ($check && ($doall || !zone_style('?',0))) {
+	    eval {
+		if ($localonly && $cfg->{'s'} =~ m/f/) {
+		    zone_warning("foreign zone specified with -l",'');
+		} elsif ($localonly && $cfg->{'s'} !~ m/p/) {
+		    zone_check_local();
+		} else {
+		    zone_check_full();
+		}
+	    };
+	    zone_warning("checks failed: $@",'') if length $@;
+	}
+	$output_contents{$$cfg{'output'}} .= zone_output()
+	    if $install;
+
+	mail_zone_after() if $domail;
+    }
+    if ($domail) {
+    } elsif ($warnings) {
+	printf STDERR ("%s: %d warning(s) in %d zone(s);".
+		       " %d zone(s) checked ok.\n",
+		       $quis,
+		       $warnings,
+		       scalar(keys %zone_warnings),
+		       scalar(@zones - keys %zone_warnings));
+    } else {
+	progress(1, sprintf "%d zone(s) checked ok", scalar @zones);
+    }
+}
+
+use vars qw(%delgs); # $delgs{$nameserver_list} = [ $whosaidandwhy ]
+use vars qw(%auths); # $auths{$nameserver_list} = [ $whosaidandwhy ]
+use vars qw(%glue);  # $glue{$name}{$addr_list} = [ $whosaidandwhy ]
+use vars qw(%soas);  # $soa{"$serial $mname"} = [ $whosaidandwhy ]
+use vars qw(%addr_is_ok %warned);
+use vars qw($delg_to_us);
+use vars qw(@to_check); # ($addr,$whyask,$name_if_auth,$glueless_ok, ...)
+use vars qw(@to_check_soa); # ($addr,$whyask,$name,$is_ns, ...)
+
+sub zone_warning ($$) {
+    my ($w,$o) = @_;
+    my ($wk);
+
+    return 0 if !$repeat && $warned{$w}++;
+
+    $w =~ s/\n$//;
+    $w =~ s,\n, // ,g;
+
+    $w .= " ($o)" if length $o;
+    print $warn_fh "$zone: warning: $w\n" or die $!;
+    $warnings++;
+    $zone_warnings{$zone}++;
+    return 1;
+}
+
+sub zone_warnmore ($) {
+    print $warn_fh "$zone:  $_[0]\n" or die $!;
+}
+
+sub zone_check_full () {
+    zone_investigate();
+    zone_consistency();
+    zone_servers_ok();
+}
+
+sub zone_reset() {
+    %delgs= %auths= %glue= %soas= %warned= %addr_is_ok= ();
+    $delg_to_us= 0;
+    @to_check= @to_check_soa= ();
+}
+
+sub zone_investigate() {
+    my ($super_zone, @start_nsnames, $start_ww,
+	$start_ns, @start_ns_addrs, $s, $wa, $name_if_auth,
+	%nsrrset_checked, %soa_checked, $addr, $glueless_ok,
+	$rcode, $name, $is_ns);
+
+    if (!zone_style('*',0)) {
+	$super_zone= $zone;
+	for (;;) {
+	    debug_trace("zone $zone superzone $super_zone");
+	    $super_zone eq '.'
+		and die "no superzone ? ($super_zone)\n";
+	    $super_zone =~ s/^[^.]+\.//
+		or $super_zone= '.';
+	    ($rcode,@start_nsnames)=
+		lookup($super_zone,'ns-','06',"superzone search");
+	    last if !$rcode;
+	}
+	$start_ww= "server for $super_zone";
+    } else {
+	($rcode,@start_nsnames)=
+	    lookup($zone,'ns-','0',"initial nameserver search");
+	$start_ww= "nameserver for $zone";
+    }
+    for $start_ns (@start_nsnames) {
+	$start_ns= lc $start_ns;
+	($rcode,@start_ns_addrs)= lookup($start_ns,'a','0',"$start_ww");
+	foreach $addr (@start_ns_addrs) {
+	    push @to_check, $addr, "$start_ns, $start_ww", undef, 0;
+	}
+    }
+    for (;;) {
+	# We do these in order so that we always do NS RRset checks on
+	# nameservers that came from other NS RRsets first; otherwise
+	# we might set nsrrset_checked due to a glueless_ok check,
+	# and then not check for gluefulness later.
+	debug_dump('@to_check @to_check_soa');
+	if (($addr,$wa,$name_if_auth,$glueless_ok,@to_check) = @to_check) {
+	    push @to_check_soa, $addr, $wa, $name_if_auth, 1,
+		if defined $name_if_auth;
+	    next if $nsrrset_checked{$addr}++;
+	    zone_check_nsrrset($addr, $wa, $name_if_auth, $glueless_ok);
+	} elsif (($addr,$wa,$name,$is_ns,@to_check_soa) = @to_check_soa) {
+	    next if $soa_checked{$addr}++;
+	    zone_check_soa($addr,$wa,$name,$is_ns);
+	} else {
+	    last;
+	}
+    }
+}
+
+sub zone_check_nsrrset ($$$$) {
+    my ($uaddr,$wa, $name_if_auth, $glueless_ok) = @_;
+    my (@s, $s, $a, %s2g, @glue, $glue, $delgs_or_auths, $wwn, $ww, $cg);
+    my ($rcode);
+    $ww= "[$uaddr] $wa";
+    verbose("checking delegation by $ww");
+    dig(sub {
+	if ($dig_type eq 'ns' && $dig_owner eq $zone) {
+	    $s2g{lc $dig_rdata} = [ ];
+	} elsif ($dig_type eq 'a' && exists $s2g{$dig_owner}) {
+	    $wwn= "in glue from $ww";
+	    zone_server_queue($dig_rdata,$dig_owner,$wwn,"NS [$uaddr]",0);
+	    push @{ $s2g{$dig_owner} }, $dig_rdata;
+	}
+    },
+	     $zone,'ns',$uaddr);
+    if (!%s2g) {
+	zone_warning("unable to find NS RRset at [$uaddr]", $wa);
+	return;
+    } elsif (keys %s2g == 1) {
+	zone_warning("only one nameserver ". (join '', keys %s2g),
+		     $ww);
+    }
+    @s= sort keys %s2g;
+    foreach $s (@s) {
+	zone_ns_name($s,$ww);
+	@glue= @{ $s2g{$s} };
+	if (!@glue) {
+	    zone_warning("glueless NS $s", $ww)
+		unless $glueless_ok
+                    or zone_style('~',!$needglue)
+		    or grep { has_suffix_of($zone,".$_"); }
+			   @{ $cfg->{'conv_glueless'} }
+		    or ((grep { has_suffix_of($s,".$_"); }
+			   @{ $cfg->{'indirect_glue'} }) and
+                        !(grep { has_suffix_of($zone,".$_"); }
+			   @{ $cfg->{'indirect_glue'} }));
+	    foreach $cg (@{ $cfg->{'conv_glueless'} }) {
+		zone_warning("nameserver $s (glueless) in".
+			     " serverless-glueless namespace area $cg", $ww)
+		    if has_suffix_of(".$s",".$cg");
+	    }
+	    ($rcode,@glue)= lookup($s,'a','0',"glueless NS from $ww");
+	    foreach $a (@glue) {
+		$wwn= "glueless NS from $ww";
+		zone_server_queue($a,$s,$wwn,"NS [$uaddr]",0);
+	    }
+	}
+	$glue= join ' ', sort @glue;
+	push @{ $glue{$s}{$glue} }, $ww;
+    }
+    $s= join ' ', @s;
+    $delgs_or_auths= defined($name_if_auth) ? \%auths : \%delgs;
+    push @{ $delgs_or_auths->{$s} }, $ww;
+}
+
+sub zone_ns_name ($$) {
+    my ($name,$ww) = @_;
+    $delg_to_us=1 if grep { $name eq $_ } @{ $cfg->{'self_ns'} };
+    zone_warning("published server, as $name, but configured as stealth",
+		 $ww)
+	if $cfg->{'s'} =~ m/u/ &&
+	   grep { $_ eq $name }
+               @{ $cfg->{'self_ns'} }, @{ $cfg->{'self_soa'} };
+}
+
+sub zone_server_queue ($$$$$) {
+    my ($addr,$name,$wwn,$wwq,$is_soa) = @_;
+    zone_server_addr($addr,$name,$wwn,$wwq,$is_soa);
+    push @to_check, $addr, "$name, $wwn", $name, $is_soa;
+}
+
+sub zone_server_addr ($$$$$) {
+    my ($addr,$name,$ww,$wwq,$is_soa) = @_;
+    debug_trace("zone_server_addr ".join('|',@_));
+    $addr_is_ok{$addr}= "$name ($wwq)"
+	if $is_soa || $cfg->{'s'} =~ m/u/;
+    zone_warning("forbidden nameserver address [$addr] $name",$ww)
+	if grep { $_ eq $addr } @{ $cfg->{'forbid_addr'} };
+    zone_warning("forbidden server address for our slave [$addr] $name",$ww)
+	if $cfg->{'s'} =~ m/p/ and
+           grep { $_ eq $addr } @{ $cfg->{'forbid_slave'} };
+
+    my ($name_is_self, $addr_is_self);
+    $name_is_self= grep { $_ eq $name }
+        @{ $cfg->{$is_soa ? 'self_soa' : 'self_ns'} };
+    $addr_is_self= grep { $_ eq $addr }
+        @{ $cfg->{'self_addr'} };
+    if ($name_is_self && !$addr_is_self) {
+	zone_warning("our $name supplied with wrong address [$addr]", $ww);
+    }
+    if (!$name_is_self && $addr_is_self) {
+	zone_warning("we [$addr] are named in ".
+		     ($is_soa ? "SOA" : "NS").
+		     " by wrong name $name",
+		     $ww);
+    }
+    if (!$name_is_self && !$addr_is_self &&
+	$is_soa && $cfg->{'s'} =~ m/p/) {
+	zone_warning("SOA MNAME $name is not us (".
+		     (join ' ', @{ $cfg->{'self_soa'} }).")", $ww);
+    }
+    $delg_to_us=1 if $addr_is_self && !$is_soa;
+}
+
+sub zone_check_soa ($$$$) {
+    my ($uaddr,$wa,$name,$is_ns) = @_;
+    my ($lame,$serial,$mname,$got,$rcode,@soa_addrs,$soa_addr,$ww,$wwn);
+    verbose("checking service at [$uaddr] $name");
+    $lame= 'dead or lame';
+    $ww= "[$uaddr] $wa";
+    dig(sub {
+	if ($dig_type eq 'flags:') {
+	    $lame= $dig_rdata =~ m/ aa / ? '' : 'lame';
+	} elsif ($dig_type eq 'soa' && $dig_owner eq $zone && !$lame) {
+	    die "several SOAs ? $ww" if defined $mname;
+	    $got= $dig_rdata;
+	    $got =~ m/^(\d+) (\S+)$/ or die "$got ?";
+	    ($serial,$mname) = ($1,$2);
+	}
+    },
+	     $zone,'soa',$uaddr);
+    $lame= 'broken' if !$lame && !defined $mname;
+    if ($lame) { zone_warning("$lame server [$uaddr]",$wa); return; }
+    progress(2, sprintf "%-16s %46s has %s%s",
+	     $zone, "$name [$uaddr]", $serial, $is_ns ? '' : '*');
+    push @{ $soas{$got} }, $ww;
+    ($rcode,@soa_addrs)= lookup($mname,'a','0',"SOA MNAME");
+    $wwn= "SOA MNAME from $ww";
+    foreach $soa_addr (@soa_addrs) {
+	zone_server_queue($soa_addr,$mname,$wwn,"SOA [$uaddr]",1);
+    }
+}
+
+sub zone_consistency() {
+    my ($d, $org_ser, $mname, $a, $h, $self_soa, $wa);
+    zone_consistency_set('delegations',\%delgs);
+    foreach $d (keys %delgs) { delete $auths{$d}; }
+    zone_consistency_set('zone nameserver rrset',\%auths);
+    foreach $h (keys %glue) {
+	zone_consistency_set("glue for $h", $glue{$h});
+    }
+    zone_consistency_set("serial number and/or SOA MNAME",\%soas);
+    $self_soa= $cfg->{'self_soa'};
+}
+
+sub zone_servers_ok () {
+    my ($showok,%fs);
+    if (%addr_is_ok) {
+	$showok= 0;
+	foreach $a (@{ $cfg->{'servers'} }) {
+	    next if exists $addr_is_ok{$a};
+	    zone_warning("we slave from [$a]",'')
+		and $showok=1;
+	}
+	if ($showok) {
+	    foreach $a (keys %addr_is_ok) {
+		zone_warnmore("permitted master [$a] $addr_is_ok{$a}");
+	    }
+	}
+    }
+    if ($cfg->{'s'} =~ m/s/ && !$delg_to_us) {
+	zone_warning("we are supposedly published secondary,".
+		     " but not listed as a nameserver",'');
+	map { $fs{$_}=1 } keys(%delgs), keys(%auths);
+	zone_warnmore("servers are: ". join ' ', sort keys %fs);
+    }
+}
+
+sub zone_consistency_set ($%) {
+    my ($msg,$set) = @_;
+    my ($d,$o);
+    if (keys(%$set) > 1) {
+	zone_warning("inconsistent $msg:",'');
+	foreach $d (keys %$set) {
+	    foreach $o (@{ $set->{$d} }) { zone_warnmore(" $d from $o"); }
+	}
+    }
+}
+
+sub zone_check_local () {
+    zone_servers_simplefind();
+    zone_servers_ok();
+}
+
+sub zone_servers_simplefind () {
+    my ($rcode,@nsnames,$ns,@soas,$mname);
+
+    ($rcode,@nsnames)= lookup($zone,'ns-','0',"zone's servers");
+    foreach $ns (@nsnames) {
+	zone_ns_name($ns,"NS");
+	zone_server_simple($ns,'NS',0);
+    }
+    $delgs{join ' ', sort @nsnames} = [ "zone's servers" ];
+
+    ($rcode,@soas)= lookup($zone,'soa','0',"SOA MNAME");
+    die "multiple SOA RRs in set!  @soas ?" if @soas!=1;
+    $soas[0] =~ m/^(\S+)\s/ or die "SOA ? $_";
+    zone_server_simple(domain_canon($1,"lookup $zone SOA"),'SOA',1);
+}
+
+sub zone_server_simple ($$$) {
+    my ($name,$ww,$is_soa) = @_;
+    my ($rcode,@addrs,$addr);
+    ($rcode,@addrs)= lookup($name,'a','0', "server - ".
+			    ($is_soa ? "SOA MNAME" : "NS"));
+    foreach $addr (@addrs) { zone_server_addr($addr,$name,$ww,$ww,$is_soa); }
+}
+
+sub zone_style ($$) {
+    my ($stylechar, $default) = @_;
+    local ($_) = $$cfg{'s'};
+    $stylechar =~ s/\W/\\$&/ or die;
+    return m/(\S*)$stylechar/ ? $1 !~ m/\!/ : $default;
+}
+
+#-------------------- mailing
+
+use vars qw($m_base $m_lastok @m_ok @m_fail
+	    $m_info $m_time $m_lock $m_m);
+
+sub mail_zone_before () {
+    my (@s1,@s2);
+
+    $m_base= $$cfg{'maildir'}.'/'.$zone;
+    $m_lastok= '-';
+    @m_ok= ();
+    @m_fail= ();
+
+    for (;;) {
+	$m_lock= new IO::File "${m_base}_lock", O_RDWR|O_CREAT, 0600
+	    or die "$quis: create lockfile ${m_base}_lock: $!\n";
+	if (!flock($m_lock, LOCK_EX|LOCK_NB)) {
+	    <$m_lock> =~ m/^\d+ /;
+	    die "$quis: $zone: concurrrency? - flock $&$!\n";
+	    $m_lock->close;
+	    return 0;
+	}
+	(@s1= $m_lock->stat) or die "$quis: fstat ${m_base}_lock: $!\n";
+	(@s2= stat "${m_base}_lock") or
+	    die "$quis: stat ${m_base}_lock: $!\n";
+	last if ($s1[0] eq $s2[0] && $s1[1] eq $s2[1]);
+	$m_lock->close;
+    }
+    (print $m_lock "$$        \n" and $m_lock->flush)
+	or die "$quis: write pid to ${m_base}_lock: $!\n";
+
+    if ($m_info= new IO::File "${m_base}_info", 'r') {
+	$!=0; $_= <$m_info>;
+	$_ =~ m/\n/ or die "$quis: read ${m_base}_info: $!\n";
+	m/^\d+ (\d+|-) ([0-9:]*) ([0-9:]*) / or
+	    die "$quis: ${m_base}_info malformed\n";
+	$m_lastok= $1;
+	if ($domail ne 'first') {
+	    if ($2 eq ':' && $3 eq ':') {
+		warn "$quis: $zone: mid/last run, but last".
+		    "run already done, ignoring zone\n";
+		return 0;
+	    }
+	    @m_ok= split /\:/, $2;
+	    @m_fail= split /\:/, $3;
+	}
+    } elsif ($! != &ENOENT) {
+	die "$quis: open ${m_base}_info: $!\n";
+    } elsif ($domail ne 'first') {
+	warn "$quis: $zone: first run, but not --mail-first,".
+	    " ignoring zone\n";
+	return 0;
+    }
+    if ($domail eq 'first') {
+	remove "${m_base}_history" or $!==&ENOENT
+	    or die "$quis: remove ${m_base}_history: $!\n";
+    }
+    $progress_fh= $warn_fh= new IO::File "${m_base}_history",'a',0666
+	or die "$quis: open ${m_base}_history: $!\n";
+    $m_info= new IO::File "${m_base}_info.tmp",'w',0666
+	or die "$quis: open ${m_base}_info.tmp: $!\n";
+
+    $m_time= time;
+    progress(-1, "\n".('-'x70)."\n".ptime($m_time)."\n");
+    return 1;
+}
+
+sub mail_zone_after () {
+    if ($zone_warnings{$zone}) {
+	push @m_fail, $m_time;
+	progress(-1,"failed - $zone_warnings{$zone} warnings");
+    } else {
+	push @m_ok, $m_time;
+	$m_lastok= $m_time;
+	progress(-1,"everything is fine");
+    }
+    close $progress_fh or die "$quis: close ${m_base}_history: $!\n";
+    $progress_fh= $warn_fh= $stderr_fh;
+
+    if ($domail =~ m/^final/) {
+	if (100*@m_fail <= $$cfg{'mailmwarn'}*(@m_fail + @m_ok)) {
+	    printf " %-40s ok\n", $zone or die "$quis: mail ok report: $!\n";
+	} elsif (zone_style('@',0)) {
+	    printf " %-40s mail suppressed\n", $zone
+		or die "$quis: mail suppress report: $!\n";
+	} else {
+	    mail_zone_mail();
+	}
+    } else {
+	printf " %-40s %d warns. OK %s Fail %s\n",
+	    $zone,
+	    defined $zone_warnings{$zone} ? $zone_warnings{$zone} : 0,
+	    join(',', map { $_ - $m_time } @m_ok),
+	    join(',', map { $_ - $m_time } @m_fail)
+		or die "$quis: checking progress report: $!\n";
+    }
+
+    @m_fail= @m_ok= ('','')
+	if $domail =~ m/^final/;
+
+    printf $m_info "%s %s %s %s \n",
+        $m_time, $m_lastok, join(':',@m_ok), join(':',@m_fail)
+	    or die "$quis: write new ${m_base}_info: $!\n";
+    $m_info->close or die "$quis: close new ${m_base}_info: $!\n";
+    rename "${m_base}_info.tmp", "${m_base}_info"
+	or die "$quis: install new ${m_base}_info: $!\n";
+    $m_lock->close;
+}
+    
+
+sub pmail ($) {
+    print $m_m $_[0]
+	or die "$quis: write ${m_base}_mail: $!\n";
+}
+sub ptime ($) {
+    my ($time) = @_;
+    return gmtime($time)." GMT ($time)";
+}
+
+sub mail_zone_mail () {
+    my ($log, $zone_to, $zterr, $c, $r, $t, @soas);
+    $m_m= new IO::File "${m_base}_mail", 'w', 0666
+	or die "$quis: create ${m_base}_mail: $!\n";
+    $zone_to=''; $zterr='';
+    if (!zone_style("\$", $$cfg{'s'} !~ m/[ps]/)) {
+	eval {
+	    ($r,@soas)= lookup($zone,'soa','0','problem-addr');
+	    @soas==1 or die "multiple soas\n";
+	    $soas[0] =~ m/^\S+ (\S.*\@\S+) [0-9 ]+$/ or
+		die "bad soa \`$_'\n";
+	    $zone_to= $1;
+	};
+	$zterr= $@;
+	$zterr =~ s/\n$//;
+    }
+    pmail <<END
+From: zone checker <$$cfg{'admin'}>
+Subject: $zone - configuration problems report
+END
+;
+    pmail("To: ");
+    pmail("(testing!) ") if $domail ne 'final';
+    pmail("SOA MNAME for $zone <$zone_to>\nCC: ") if length($zone_to);
+    pmail($$cfg{'admin'}."\n\n");
+    pmail <<END
+You are receiving this mail because your email address is listed
+in the SOA (Start Of Authority) record for $zone
+in the DNS, which means you are supposedly the DNS administrator
+responsible for this zone.  This report is generated automatically
+on behalf of $$cfg{'admin'}, who
+is the administrator for a server for the zone.  Please contact
+them if you have any problem with this report.
+
+END
+if length $zone_to;
+    pmail <<END
+Sent to $$cfg{'admin'} since SOA MNAME unavailable:
+$zterr
+
+END
+if length $zterr;
+    pmail <<END
+The zone has had configuration errors or persistent operational
+problems during recent checks.  See the logs below for details.
+
+Recent check history for $zone:
+END
+;
+    if ($m_lastok ne '-') {
+	pmail(" Last seen to be fine: ".ptime($m_lastok)."\n");
+    } else {
+	pmail(" No record of this zone ever being fine.\n");
+    }
+    for $t (@m_fail) {
+	pmail(" Zone had problems at: ".ptime($t)."\n");
+    }
+    for $t (@m_ok) {
+	pmail(" Everything in order at: ".ptime($t)."\n");
+    }
+    pmail("\n");
+    $log= new IO::File "${m_base}_history",'r'
+	or die "$quis: reopen ${m_base}_history: $!";
+    undef $/;
+    pmail($log->getline);
+    $/= "\n";
+    (!$log->error and $log->close)
+	or die "$quis: reread or close ${m_base}_log: $!\n";
+    $log->eof or die;
+    $m_m->close or die "$quis: close ${m_base}_mail: $!\n";
+    $m_m= new IO::File "${m_base}_mail"
+	or die "$quis: reopen ${m_base}_mail: $!";
+
+    defined($c= fork) or die "$quis: fork for mail: $!\n";
+    if (!$c) {
+	defined dup2($m_m->fileno, 0)
+	    or die "$quis - sendmail: dup for stdin: $!\n";
+	exec (qw(/usr/sbin/sendmail -odb -oee -oi),
+	      ($domail eq 'final' ? '-t' : $$cfg{'admin'}));
+	die "$quis - sendmail: exec: $!\n";
+    }
+    $m_m->close;
+    $!=0; $r= waitpid $c,0;
+    $r == $c or die "$quis: waitpid sendmail ($c): $r $!";
+    $? and warn "$quis: sendmail failed: $?\n";
+
+    printf " %-40s %s\n", $zone,
+        length $zone_to ? $zone_to : 'reporting to admin'
+	    or die "$quis: write mailing report: $!\n";
+}
+
+#-------------------- outputting
+
+sub zone_output () {
+    my ($o,$m);
+
+    $o= "zone \"$zone\" {\n";
+    if ($$cfg{'s'} =~ m/p/) {
+	$o.= "    type master;\n";
+    } else {
+	$o.= "    type slave;\n".
+	     "    masters {\n";
+	foreach $m (@{ $$cfg{'servers'} }) { $o.= "        $m;\n"; }
+	$o.= "    };\n";
+    }
+    $o.= "    file \"$$cfg{'file'}\";\n";
+    $o.= "};\n";
+    return $o;
+}
+
+sub output_files () {
+    my ($fn,$ofn,$mfn,$l,$dir, $maxmode,$h,@to_install);
+    
+    foreach $ofn (keys %output_contents) {
+	$fn= $ofn; $mfn= "output file $fn";
+	for (;;) {
+	    if (!lstat $fn) {
+		$! == &ENOENT or die "$quis: stat $mfn:\n $!\n";
+		$maxmode= 0666;
+		last;
+	    } elsif (-f _) {
+		$maxmode= (stat _)[2];
+		last;
+	    } elsif (-l _) {
+		defined($l= readlink $fn)
+		    or die "$quis: readlink $mfn:\n $!\n";
+		$dir= $fn =~ m,^.*/, ? $& : './';
+		$fn= "$dir$l" unless $l =~ m,^/,;
+		$mfn= "output file $fn (symlink target of $ofn)";
+	    } else {
+		die "$quis: output file $mfn exists but is not a file".
+		    " (or symlink to one)";
+	    }
+	}
+	unlink "$fn.new" or $! == &ENOENT or
+	    die "$quis: cannot clear out old .new version of $mfn:\n $!";
+	$h= new IO::File "$fn.new",'w',$maxmode
+	    or die("$quis: create .new version of $mfn:\n $!");
+	print $h
+	    "# generated by $quis, do not edit\n",
+	    $output_contents{$ofn}
+	    or die "$quis: write data to .new version of $mfn:\n $!";
+        $h->close
+	    or die "$quis: close .new version of $mfn:\n $!";
+	push @to_install, $fn,$mfn;
+    }
+
+    while (($fn,$mfn, @to_install) = @to_install) {
+	rename "$fn.new",$fn
+	    or die "$quis: install new version of $mfn:\n $!";
+    }
+}
+
+#-------------------- general utilities
+
+sub debug_dump ($) {
+    my ($vn);
+    return unless $debug>1;
+    local $Data::Dumper::Terse=1;
+    foreach $vn (split /\s+/, $_[0]) {
+	print "$vn := ", eval "Dumper(\\$vn)";
+    }
+}
+
+sub debug_trace ($) {
+    return unless $debug;
+    print "D $_[0]\n";
+}
+
+sub has_suffix_of ($$) {
+    my ($whole,$suffix) = @_;
+    debug_trace("has_suffix_of $whole $suffix");
+    return 0 if length $whole < length $suffix;
+    return 0 if substr($whole, length($whole) - length($suffix)) ne $suffix;
+    debug_trace("has_suffix_of $whole $suffix YES");
+    return 1;
+}
+
+sub lookup ($$$$) {
+    my ($domain,$type,$okrcodes,$w) = @_;
+    my ($c,$h,@result);
+    debug_trace("lookup ==> (->$okrcodes) $domain $type");
+    $h= new IO::Handle;
+
+    defined($c= open $h, "-|") or die "$quis: fork adnshost:\n $!\n";
+    if (!$c) {
+	exec 'adnshost','-Fi','+Do','+Dt','+Dc','-Cf',"-t$type",
+	     '-',"$domain";
+	die "$quis: exec adnshost:\n $!\n";
+    }
+    @result= $h->getlines();
+    $h->error and die "$quis: read from adnshost:\n $!\n";
+    chomp @result;
+    $!=0; $h->close;
+    die "$quis: lookup -t$type $domain $okrcodes ($w) failed $? $! @result\n"
+	if $! or $?&255 or $?>1536 or index($okrcodes,$?>>8)<0;
+    debug_trace("lookup <== $? @result");
+    return ($?,@result);
+}
+
+sub dig (&$$$) {
+    my ($eachrr, $qowner,$qtype,$qaddr) = @_;
+    # also pseudo-rr with type `flags:'
+    my ($h,$inmid,$irdata,$c,$digwhy);
+    local ($_);
+
+    debug_trace("dig ==> \@$qaddr $qowner $qtype");
+
+    $h= new IO::Handle;
+    defined($c= open $h, "-|") or die "$quis: fork dig:\n $!\n";
+    if (!$c) {
+	open STDERR, ">&STDOUT" or die $!;
+	exec ('dig',
+	      '+nodef','+nosea','+norecurse',
+	      "\@$qaddr",'-t',$qtype,$qowner);
+	die "$quis: exec dig:\n $!\n";
+    }
+    $inmid='';
+    for (;;) {
+	if (!defined($_= $h->getline())) {
+	    $h->error() and die "$quis: read from dig:\n $!\n";
+	    last;
+	}
+	chomp;
+	if (length $inmid) {
+	    s/^\s+/ / or die "$inmid // $_ ?";
+	    s/\;.*$//;
+	    $_= $inmid.$_;
+	    $inmid='';
+	    s/$/ \(/ unless s/\s*\)\s*$//;
+	}
+	if (s/\s*\(\s*$//) { $inmid= $_; next; }
+	$digwhy= "dig $qowner $qtype $qaddr \`$_'";
+	if (m/^\;\; flags\:( [-0-9a-z ]+)\;/) {
+	    $dig_owner=''; $dig_type='flags:'; $dig_rdata= "$1 ";
+	    debug_trace("dig  f: $dig_rdata");
+	    &$eachrr;
+	} elsif (m/^\;/) {
+	} elsif (!m/\S/) {
+	} elsif (m/^([-.0-9a-z]+)\s+\d\w+\s+in\s+([a-z]+)\s+(\S.*)/i) {
+	    $dig_owner=domain_canon($1,$digwhy); $dig_type=lc $2; $irdata=$3;
+	    if ($dig_type eq 'a') {
+		$irdata =~ m/^[.0-9]+$/ or die "$irdata ?";
+		$dig_rdata= $&;
+	    } elsif ($dig_type eq 'ns') {
+		$irdata =~ m/^[-.0-9a-z]+$/i or die "bad nameserver $irdata ?";
+		$dig_rdata= domain_canon($irdata,$digwhy);
+	    } elsif ($dig_type eq 'soa') {
+		$irdata =~ m/^([-.0-9a-z]+)\s+.*\s+(\d+)(?:\s+\d\w+){4}$/i
+		    or die "bad SOA $irdata ?";
+		$dig_rdata= $2.' '.domain_canon($1,$digwhy);
+	    } else {
+		debug_trace("ignoring uknown RR type $dig_type");
+		next;
+	    }
+	    debug_trace("dig  $dig_owner $dig_type $dig_rdata");
+	    &$eachrr;
+	} else {
+	    debug_trace("ignoring unknown dig output $_");
+	}
+    }
+    $h->close;
+    debug_trace("dig <== gave $?");
+}
+
+sub domain_canon ($$) {
+    my ($i,$w) = @_;
+    $i =~ s/(.)\.$/$1/;
+    return '.' if $i eq '.';
+    die "domain $i ($w) ?" unless $i =~ m/^[0-9a-z]/i;
+    return lc $i;
+}

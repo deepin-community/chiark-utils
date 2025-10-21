@@ -1,0 +1,33 @@
+# This is an example /etc/sync-accounts for BSD.
+
+lockpasswd runvia vipw
+lockgroup none
+localformat bsd
+logfile /var/log/sync-accounts
+
+uidmin 500
+uidmax 29999
+homebase /home
+defaultshell /usr/local/bin/bash
+
+host fowey
+getpasswd rsh fowey -l syncacct cat /etc/passwd
+getshadow rsh fowey -l syncacct cat /etc/shadow
+getgroup rsh fowey -l syncacct cat /etc/group
+createuser sync-accounts-createuser
+sameuid
+group devel
+
+nousergroups
+user devel
+usergroups
+
+users 500-29999
+
+nogroup *
+nocreateuser
+nousergroups
+nosameuid
+#user root
+
+end

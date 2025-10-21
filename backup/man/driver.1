@@ -1,0 +1,31 @@
+.TH BACKUP-DRIVER "1" "July 2003" "Debian" "Chiark-backup"
+.SH NAME
+backup-driver \- entry point for cron or inittab to start backups
+.SH SYNOPSIS
+.B backup-driver
+.I [-test]
+.br
+.SH DESCRIPTION
+`backup-driver' is the script to actually run to do a backup. It
+assumes that it is being run from cron or inittab unless passed the
+`test' option
+.SH OPTIONS
+.TP
+.BR -test
+Do not attempt to use backup-bringup to change runlevel. Use this
+argument when running backup-driver from the command line.
+.SH FILES
+.TP
+.I /etc/chiark-backup/settings.pl
+Configuration file for the whole of chiark-backup
+.P
+.SH AUTHOR
+This Manual page was written by Matthew Vernon <matthew@debian.org> but 
+may be used by anyone.
+.SH COPYRIGHT
+Copyright (C) 1997-1998,2000-2001 Ian Jackson <ian@chiark.greenend.org.uk>
+.br
+Copyright (C) 1999 Peter Maydell <pmaydell@chiark.greenend.org.uk>
+.br
+This is free software; see the source for copying conditions.  There is NO
+warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.

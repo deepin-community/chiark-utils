@@ -1,0 +1,60 @@
+#!/bin/sh
+# driver
+# entry point for inittab (or perhaps cron) to run the backups.
+#
+# This file is part of chiark backup, a system for backing up GNU/Linux and
+# other UN*X-compatible machines, as used on chiark.greenend.org.uk.
+#
+# chiark backup is:
+#  Copyright (C) 1997-1998,2000-2001,2007
+#                     Ian Jackson <ian@chiark.greenend.org.uk>
+#  Copyright (C) 1999 Peter Maydell <pmaydell@chiark.greenend.org.uk>
+#
+# This is free software; you can redistribute it and/or modify it under the
+# terms of the GNU General Public License as published by the Free Software
+# Foundation; either version 3, or (at your option) any later version.
+#
+# This is distributed in the hope that it will be useful, but WITHOUT ANY
+# WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+# FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
+# details.
+#
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, consult the Free Software Foundation's
+# website at www.fsf.org, or the GNU Project website at www.gnu.org.
+
+cd /var/lib/chiark-backup
+PATH=/usr/share/chiark-backup:$PATH export PATH
+
+if [ "x$1" != test ]; then
+	stty sane
+	stty -isig
+fi
+
+rm -f this-status p p2
+echo 'FAILED to start dump script' >this-status
+
+# Here we go : run 'full', which (name notwithstanding) handles
+# both full and incremental backups, according to the ID of the
+# tape in the drive.
+(full; snap-drop) 2>&1 | tee this-log
+
+status=`cat this-status 2>/dev/null`
+
+# Mail a report to somewhere appropriate; -odq removed (means just 
+# queue message, don't try to deliver) because it just delays the
+# message (you might want that if mail was one of the services turned
+# off for the duration of the backup, though).
+cat <<END - this-log | /usr/lib/sendmail -oi -om -oee -t
+To: dump-reports
+Subject: Dump Report: $status
+
+END
+
+rm -f /TAPEID
+
+if [ "x$1" != test ]; then
+        # Bring the system up as multiuser again
+	bringup
+	stty isig
+fi

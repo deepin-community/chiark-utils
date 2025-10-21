@@ -1,0 +1,58 @@
+.TH acctdump 8 2014-10-06 chiark-utils-bin
+.SH NAME
+acctdump \- accounting data dump utility
+.SH SYNOPSIS
+.B acctdump
+.RB [ -f|--forwards ]
+.RB [ -q|--no-banner ]
+.RB [ -p|--stdin ]
+.RB [ -r|--raw ]
+.RB [ -u|--resource ]
+.RI [ <file> ... ]
+.SH DESCRIPTION
+.B acctdump
+reads process accounting data from 
+.B file
+or, by default, from the system process account file 
+.I /var/log/account/pacct 
+and outputs it as a table on stdout.
+.SH OPTIONS
+.TP
+.B -f|--forwards
+Output data with the oldest entry first rather than last.
+.TP
+.B -q|--no-banner
+Don\'t output a header in the first line.
+.TP
+.B -p|--stdin
+Read accounting data from stdin.
+.TP
+.B -r|--raw
+Don\'t convert date, uid, gid, tty, and exit status to human readable forms.
+.TP
+.B -u|--resource
+Additionally display resource usage data.
+.SH "SEE ALSO"
+.BR ac (1)
+.BR accton (8)
+.BR dump-acct (8)
+.BR dump-utmp (8)
+.BR lastcomm (1)
+.BR sa (8)
+.SH AUTHOR
+.B acctdump
+is
+.BR
+Copyright (C) 1998, 2001, 2006 Ian Jackson <ian@chiark.greenend.org.uk>
+
+This manpage was written by Jonathan Amery.  It is
+.BR
+Copyright (C) 2014 Jonathan Amery <jdamery@chiark.greenend.org.uk>
+
+This is free software, distributed under the GNU General Public
+Licence, version 3 or (at your option) any later version; see
+/usr/share/doc/chiark-utils-bin/copyright or
+/usr/share/common-licenses/GPL-3
+for copying conditions.  There is NO
+warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+

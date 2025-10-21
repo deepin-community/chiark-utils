@@ -1,0 +1,12 @@
+#!/bin/bash
+set -e
+pf=`tempfile`
+rm -f $pf
+mknod -m600 $pf p
+exec 3<>$pf
+exec >$pf 4<$pf
+rm -f $pf
+exec 3>&-
+(exec logger -p user.info -t trivsoundd <&4 >/dev/null 2>&1) &
+exec 4<&- 2>&1 </dev/null
+exec ${0%%-start}

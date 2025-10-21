@@ -1,0 +1,164 @@
+#!/usr/bin/perl
+
+$testuser=   'testac';
+$testgroup=  'testac';
+$testuid=    1000;
+$testgid=    1000;
+@testxgids=  qw(1000);
+$numgid=     50008;
+$othergroup= 'daemon';
+$othergid=   1;
+
+sub parseid ($) {
+    my ($id) = @_;
+    my $orgid= $id;
+    my $out= '';
+    my $part;
+    chomp($id);
+    $id =~ s/^uid=// or return $id =~ m/\n/ ? "ERROR: $`" : "ERROR: $id";
+    $id =~ s/^(\d+)// or return $orgid;
+    $out= $1;
+    $id =~ s/^\([^\)]+\)//; $id =~ s/^\s+// or return $orgid;
+    $id =~ s/^gid=(\d+)// or return $orgid;
+    $out.= " $1";
+    $id =~ s/^\([^\)]+\)//; $id =~ s/^\s+// or return $orgid;
+    $id =~ s/^groups=// or return $orgid;
+    for $part (split(/,/,$id)) {
+        $part =~ s/^(\d+)// or return $orgid;
+        $out.= " $1";
+        $part =~ s/^\([^\)]+\)//; $part eq '' or return $orgid;
+    }
+    return $out;
+}
+
+$org= `id`;
+$org =~ m/^uid=\d+\(([^\)]+)\) gid=\d+\(([^\)]+)\) / or die "$org ?";
+$orguser= $1; $orggroup= $2;
+$org= parseid($org);
+$org =~ m/^\d+ \d+ / or die $org;
+($orguid,$orggid,@orgxgids)= split(/ /,$org);
+
+$tests= <<END;
+-u $testuser
+$testuid $testgid @testxgids
+
+-u $testuser -z
+ERROR: -z|--groupsclear must be accompanied by some groups
+
+-u $testuser -g $othergroup
+$testuid $othergid @testxgids $othergid
+
+-u $testuser -z -g $othergroup
+ERROR: -u|--user may not be used with -z|--groupsclear
+
+-u $testuser -G $numgid -g $othergroup
+$testuid $numgid @testxgids $numgid $othergid
+
+-u $testuser -z -G $numgid -g $othergroup
+ERROR: -u|--user may not be used with -z|--groupsclear
+
+-u $testuser -g $testgroup -G $testgid
+$testuid $testgid @testxgids
+
+-u $testuser -z -g $testgroup -G $testgid
+ERROR: -u|--user may not be used with -z|--groupsclear
+
+-u $testuser -g $othergroup -g $testgroup -G $testgid
+$testuid $othergid @testxgids $othergid
+
+-u $testuser -z -g $othergroup -g $testgroup -G $testgid
+ERROR: -u|--user may not be used with -z|--groupsclear
+
+-u $testuser -G $numgid -g $othergroup -g $testgroup -G $testgid
+$testuid $numgid @testxgids $numgid $othergid
+
+-u $testuser -z -G $numgid -g $othergroup -g $testgroup -G $testgid
+ERROR: -u|--user may not be used with -z|--groupsclear
+
+
+0 $orggid @orgxgids
+
+-i $testuser
+$testuid $orggid @orgxgids
+
+-i $testuser -z
+ERROR: -z|--groupsclear must be accompanied by some groups
+
+-i $testuser -g $othergroup
+$testuid $othergid @orgxgids $othergid
+
+-i $testuser -z -g $othergroup
+$testuid $othergid $othergid
+
+-i $testuser -G $numgid -g $othergroup
+$testuid $numgid @orgxgids $numgid $othergid
+
+-i $testuser -z -G $numgid -g $othergroup
+$testuid $numgid $numgid $othergid
+
+-i $testuser -g $orggroup -G $orggid
+$testuid $orggid @orgxgids
+
+-i $testuser -z -g $orggroup -G $orggid
+$testuid $orggid $orggid
+
+-i $testuser -g $othergroup -g $orggroup -G $orggid
+$testuid $othergid @orgxgids $othergid
+
+-i $testuser -z -g $othergroup -g $orggroup -G $orggid
+$testuid $othergid $othergid $orggid
+
+-i $testuser -G $numgid -g $othergroup -g $orggroup -G $orggid
+$testuid $numgid @orgxgids $numgid $othergid
+
+-i $testuser -z -G $numgid -g $othergroup -g $orggroup -G $orggid
+$testuid $numgid $numgid $othergid $orggid
+
+
+0 $orggid @orgxgids
+
+-z
+ERROR: -z|--groupsclear must be accompanied by some groups
+
+-g $othergroup
+$orguid $othergid @orgxgids $othergid
+
+-z -g $othergroup
+$orguid $othergid $othergid
+
+-G $numgid -g $othergroup
+$orguid $numgid @orgxgids $numgid $othergid
+
+-z -G $numgid -g $othergroup
+$orguid $numgid $numgid $othergid
+
+-g $orggroup -G $orggid
+$orguid $orggid @orgxgids
+
+-z -g $orggroup -G $orggid
+$orguid $orggid $orggid
+
+-g $othergroup -g $orggroup -G $orggid
+$orguid $othergid @orgxgids $othergid
+
+-z -g $othergroup -g $orggroup -G $orggid
+$orguid $othergid $othergid $orggid
+
+-G $numgid -g $othergroup -g $orggroup -G $orggid
+$orguid $numgid @orgxgids $numgid $othergid
+
+-z -G $numgid -g $othergroup -g $orggroup -G $orggid
+$orguid $numgid $numgid $othergid $orggid
+
+
+ERROR: sorry: Permission denied
+./really-test -u $testuser -g staff
+END
+
+@tests= split(/\n/,$tests);
+for ($i=0; $i<$#tests; $i+=3) {
+    $out= `$tests[$i+2] ./really-test $tests[$i] id 2>&1`;
+    $newout= parseid($out);
+    print("OK $tests[$i] ($tests[$i+2])\n"), next if $newout eq $tests[$i+1];
+    die "$newout != $tests[$i+1] ($tests[$i]) $i";
+}

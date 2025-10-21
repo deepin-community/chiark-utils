@@ -1,0 +1,163 @@
+#!/bin/bash
+#
+# usage: snaprsync <setting>... <positionals>
+#  <setting> is --<name>=<value>
+#  <positionals> are assigned to unused mandatory values in order
+# mandatory:
+#   rhost device mountpoint localarea 
+# optional:
+	localprevious=
+	snapkind=lvm
+	rsharedir=/usr/share/chiark-backup 
+	retcdir=/etc/chiark-backup
+	rvardir=/var/lib/chiark-backup
+	bwlimit=
+	subdir=.
+	rsyncopts=
+	rsynccompress=z
+	sshopts=
+	summer=summer
+
+
+# snaprsync
+#
+# This file is part of chiark backup, a system for backing up GNU/Linux and
+# other UN*X-compatible machines, as used on chiark.greenend.org.uk.
+#
+# chiark backup is:
+#  Copyright (C) 1997-1998,2000-2001,2007
+#                     Ian Jackson <ian@chiark.greenend.org.uk>
+#  Copyright (C) 1999 Peter Maydell <pmaydell@chiark.greenend.org.uk>
+#
+# This is free software; you can redistribute it and/or modify it under the
+# terms of the GNU General Public License as published by the Free Software
+# Foundation; either version 3, or (at your option) any later version.
+#
+# This is distributed in the hope that it will be useful, but WITHOUT ANY
+# WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+# FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
+# details.
+#
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, consult the Free Software Foundation's
+# website at www.fsf.org, or the GNU Project website at www.gnu.org.
+
+
+set -e
+
+badusage () { echo >&2 "snaprsync: bad usage: $1"; exit 12; }
+nb_echo () { (echo "$@"); } # See Debian #382798
+x () { nb_echo "+ $@"; "$@"; }
+xspawned () { eval "${1}pid=$!; nb_echo \"+[$!] ($1) &\";"; }
+xwait () { eval "nb_echo \"+[\$${1}pid] ($1)...\"; wait \$${1}pid;"; }
+
+while true; do
+	case "$1" in
+	--?*=*)
+		name=${1#--}; name=${name%%=*}
+		value=${1#--*=}
+		case "$name" in
+		rhost|device|mountpoint|localarea);;
+		localprevious|snapkind|rsharedir|retcdir|rvardir|bwlimit);;
+		subdir|rsyncopts|rsynccompress|sshopts|summer);;
+		*) badusage "unknown setting $name";;
+		esac
+		eval "$name=\$value"
+		;;
+	--)	shift; break ;;
+	-*)	badusage "unknown option $1" ;;
+	*)	break ;;
+	esac
+	shift
+done
+
+for name in rhost device mountpoint localarea; do
+	eval "value=\$$name"
+	if [ "x$value" != x ]; then continue; fi
+	if [ $# = 0 ]; then badusage "no value for setting $name"; fi
+	eval "$name=$1"
+	shift
+done
+
+datefmt='%Y-%m-%d %H:%M:%S Z'
+rsync="rsync ${bwlimit:+--bwlimit} $bwlimit"
+export RSYNC_RSH="ssh -o compression=no $sshopts"
+sshpfx='PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin; export PATH; '
+
+ssh $sshopts $rhost "$sshpfx date -u '+$rhost $datefmt start'"
+ssh $sshopts $rhost "$sshpfx id"
+ssh $sshopts $rhost "$sshpfx ls -d $rsharedir"
+ssh $sshopts $rhost "$sshpfx ls -d $rvardir"
+
+test -d $localarea || x mkdir $localarea
+ournode=`uname -n`
+rsumsfile=for-$ournode.sums
+summer="$summer -ACDBtqfx"
+
+td=/dev/enoent
+rc=12
+trap 'rm -rf $td; exit $rc' 0
+td=`mktemp -td`
+
+mkfifo -m 600 $td/sentinel
+exec 4<>$td/sentinel
+
+x ssh $sshopts $rhost "$sshpfx $rsharedir/snap-drop $rvardir"
+x ssh $sshopts $rhost "
+	$sshpfx
+	set -e
+	cd $rvardir
+	echo '$retcdir/snap/$snapkind drop $rvardir' >snap-drop.new
+	mv snap-drop.new snap-drop
+"
+x ssh $sshopts $rhost "$sshpfx $retcdir/snap/$snapkind snap $rvardir $device $mountpoint"
+ssh $sshopts $rhost <$td/sentinel 4<&- "
+  $sshpfx
+  set -e
+  date -u '+$rhost $datefmt main'
+  exec 3<&0 0</dev/null
+  (set +e; read x <&3; kill 0) &
+  cd $rvardir
+  umask 077
+  exec 3>$rsumsfile
+  cd snap-mount
+  $summer . >&3
+  date -u '+$rhost $datefmt sumsdone'
+  cd ..
+" &
+xspawned rsum
+x $rsync -aHAXSx$rsynccompress --numeric-ids --delete $rsyncopts \
+	${localprevious:+--link-dest} $localprevious \
+	$rhost:$rvardir/snap-mount/$subdir $localarea/.
+date -u "+ $datefmt rsyncdone"
+
+exec 3>$localarea,lsums
+(cd $localarea && \
+ $summer . >&3) &
+xspawned lsum
+exec 3>&-
+
+xwait rsum
+exec 4<&-
+date -u "+ $datefmt sumsdone"
+x ssh $sshopts $rhost "$sshpfx $rsharedir/snap-drop $rvardir"
+
+if [ "x${localprevious}" != x ] && test -f "$localprevious,rsums"; then
+	cp "$localprevious,rsums" "$localarea,rsums"
+fi
+x $rsync -pI \
+	$rhost:$rvardir/$rsumsfile \
+	"$localarea,rsums"
+
+xwait $lsum
+date -u "+ $datefmt checking"
+
+set +e
+diff -u <(sed -e 's/^mountpoint/dir       /' "$localarea,rsums") \
+  "$localarea,lsums" >"$localarea,sumsdiff"
+diffrc=$?
+set -e
+test $diffrc = 0 || test $diffrc = 1
+
+date -u "+ $datefmt checked $diffrc"
+rc=$diffrc

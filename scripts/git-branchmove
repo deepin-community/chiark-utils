@@ -1,0 +1,211 @@
+#!/usr/bin/perl
+
+# git-branchmove -- move branches to or from a remote
+
+# Copyright (C) 2019 Sean Whitton
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or (at
+# your option) any later version.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+# This script is based on Ian Jackson's git-branchmove script, in the
+# chiark-utils Debian source package.  Ian's script assumes throughout
+# that it is possible to have unrestricted shell access to the remote,
+# however, while this script avoids that global assumption.
+#
+# As much as possible we treat the remote argument as opaque, i.e., we
+# don't distinguish between git URIs and named remotes.  That means
+# that git will expand insteadOf and pushInsteadOf user config for us.
+
+=head1 NAME
+
+git-branchmove - move branches to or from a remote
+
+=head1 SYNOPSIS
+
+B<git-branchmove> [B<--detach>|B<-d>] B<get>|B<put> I<remote> I<pattern>...
+
+=head1 DESCRIPTION
+
+Move branches matching I<pattern> to or from git remote I<remote>.
+
+=head1 OPTIONS
+
+=over 4
+
+=item B<--detach>|B<-d>
+
+If the move would delete the currently checked out branch in the
+source repository, attempt to detach HEAD first.
+
+Note that in the case of the B<get> operation, the attempt to detach
+HEAD is somewhat fragile.  You will need unrestricted SSH access to
+the remote, and pushInsteadOf git configuration keys will not always
+be expanded, due to limitations in git.
+
+=back
+
+=head1 AUTHOR
+
+This Perl version of B<git-branchmove> was written by Sean Whitton
+<spwhitton@spwhitton.name>, based on an earlier shell script by Ian
+Jackson.  That script made some assumptions that we try to avoid, for
+compatibility with more git remotes and local git configurations.
+
+=cut
+
+use strict;
+use warnings;
+
+use Git::Wrapper;
+use Try::Tiny;
+
+# git wrapper setup
+my $git = Git::Wrapper->new(".");
+try {
+    $git->rev_parse({ git_dir => 1 });
+} catch {
+    die "git-branchmove: pwd doesn't look like a git repository ..\n";
+};
+
+# process arguments
+die "git-branchmove: not enough arguments\n" if @ARGV < 3;
+my $attempt_detach = 0;
+if ($ARGV[0] eq '-d' or $ARGV[0] eq '--detach') {
+    $attempt_detach = 1;
+    shift @ARGV;
+}
+my ($op, $remote, @patterns) = @ARGV;
+die "git-branchmove: unknown operation\n"
+  unless $op eq 'get' or $op eq 'put';
+
+# is this a named remote or a git URL?  See "GIT URLS" in git-fetch(1)
+my $named_remote = not($remote =~ m|:| or $remote =~ m|^[/.]|);
+
+# Attempt to determine how we might be able to run commands in the
+# remote repo.  This will only be used if we need to try to detach the
+# remote HEAD.  These regexps are lifted from Ian's version of
+# git-branchmove
+my ($rurl, $rrune, $rdir);
+if ($named_remote) {
+    # this will expand insteadOf and pushInsteadOf
+    ($rurl) = $git->remote("get-url", "--push", $remote);
+} else {
+    # this will expand insteadOf but not pushInsteadOf, which is the
+    # best we can do; see <https://stackoverflow.com/a/32991784>
+    ($rurl) = $git->ls_remote("--get-url", $remote);
+}
+if ($rurl =~ m#^ssh://([^:/]+)(?:\:(\w+))?#) {
+    $rdir  = $';
+    $rrune = "ssh ";
+    $rrune .= "-p $2 " if $2;
+    $rrune .= $1;
+} elsif ($rurl =~ m#^([-+_.0-9a-zA-Z\@]+):(?!//|:)#) {
+    $rdir  = $';
+    $rrune = "ssh $1";
+} elsif ($rurl =~ m#^[/.]#) {
+    $rdir = $rurl;
+}
+
+# If we don't prefix the patterns, we might match branches the user
+# doesn't intend.  E.g. 'foo' would match 'wip/foo'
+my @branch_pats = map { s|^|[r]efs/heads/|r } @patterns;
+
+# get lists of branches, prefixed with 'refs/heads/' in each case
+my (@source_branches, @dest_branches);
+my @local_branches = map {
+    my ($hash, undef, $ref) = split ' ';
+    { hash => $hash, ref => $ref }
+} $git->for_each_ref(@branch_pats);
+my @remote_branches = map {
+    my ($hash, $ref) = split ' ';
+    { hash => $hash, ref => $ref }
+} $git->ls_remote($remote, @branch_pats);
+if ($op eq 'put') {
+    @source_branches = @local_branches;
+    @dest_branches   = @remote_branches;
+} elsif ($op eq 'get') {
+    @source_branches = @remote_branches;
+    @dest_branches   = @local_branches;
+}
+
+# do we have anything to move?
+die "git-branchmove: nothing to do\n" unless @source_branches;
+
+# check for deleting the current branch on the source
+my $source_head;
+if ($op eq "put") {
+    my @lines = try { $git->symbolic_ref('-q', 'HEAD') };
+    $source_head = $lines[0] if @lines;    # the HEAD is not detached
+} elsif ($op eq "get") {
+    my @lines = try { $git->ls_remote('--symref', $remote, 'HEAD') };
+    if (@lines and $lines[0] =~ m|^ref: refs/heads/|) {
+        # the HEAD is not detached
+        (undef, $source_head) = split ' ', $lines[0];
+    }
+}
+if (defined $source_head and grep /^\Q$source_head\E$/,
+    map { $_->{ref} } @source_branches) {
+    if ($attempt_detach) {
+        if ($op eq 'put') {
+            $git->checkout('--detach');
+        } elsif ($op eq 'get') {
+            if (defined $rrune and defined $rdir) {
+                system "$rrune \"set -e; cd $rdir; git checkout --detach\"";
+                die "failed to detach remote HEAD" unless $? eq 0;
+            } elsif (!defined $rrune and defined $rdir) {
+                my $dest_git = Git::Wrapper->new($rdir);
+                $dest_git->checkout('--detach');
+            } else {
+                die "git-branchmove: don't know how to detach remote HEAD";
+            }
+        }
+    } else {
+        die "git-branchmove: would delete checked-out branch $source_head\n";
+    }
+}
+
+# check whether we would overwrite anything
+foreach my $source_branch (@source_branches) {
+    foreach my $dest_branch (@dest_branches) {
+        die "git-branchmove: would overwrite $source_branch->{ref}"
+          if (  $source_branch->{ref} eq $dest_branch->{ref}
+            and $source_branch->{hash} ne $dest_branch->{hash});
+    }
+}
+
+# time to actually move the branches
+my @refspecs      = map { "$_->{ref}:$_->{ref}" } @source_branches;
+my @nuke_refspecs = map { ":$_->{ref}" } @source_branches;
+if ($op eq 'put') {
+    $git->push(qw(--no-follow-tags --no-verify), $remote, @refspecs);
+    $git->update_ref('-m', "git-branchmove: moved to $remote ($rurl)",
+        '-d', $_->{ref}, $_->{hash})
+      for @source_branches;
+} elsif ($op eq 'get') {
+    $git->fetch('--no-tags', $remote, @refspecs);
+    $git->push(qw(--no-follow-tags --no-verify), $remote, @nuke_refspecs);
+}
+
+# if the remote is a named remote, rather than just a URI, update
+# remote-tracking branches
+if ($named_remote) {
+    foreach my $source_branch (@source_branches) {
+        my $branch       = $source_branch->{ref} =~ s|^refs/heads/||r;
+        my $tracking_ref = "refs/remotes/$remote/$branch";
+        if ($op eq 'put') {
+            $git->update_ref($tracking_ref, $source_branch->{hash});
+        } elsif ($op eq 'get') {
+            $git->update_ref('-d', $tracking_ref);
+        }
+    }
+}

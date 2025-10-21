@@ -1,0 +1,677 @@
+#!/usr/bin/perl
+# This is part of sync-accounts, a tool for synchronising UN*X password data.
+#
+# sync-accounts is
+#  Copyright 1999-2000,2002 Ian Jackson <ian@davenant.greenend.org.uk>
+#  Copyright 2000-2001 nCipher Corporation Ltd
+#
+#  sync-accounts is free software; you can redistribute it and/or
+#  modify it under the terms of the GNU General Public License as
+#  published by the Free Software Foundation; either version 3, or (at
+#  your option) any later version.
+#
+#  sync-accounts is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+#  General Public License for more details.
+#
+#  You should already have a copy of the GNU General Public License.
+#  If not, consult the Free Software Foundation's website at
+#  www.fsf.org, or the GNU Project website at www.gnu.org.
+#
+# $Id: sync-accounts,v 1.25 2007-09-21 21:21:15 ianmdlvl Exp $
+
+use POSIX;
+
+$configfile= '/etc/sync-accounts';
+$def_createuser= 'sync-accounts-createuser';
+$ch_homebase= '/home';
+$ch_defaultshell= '/bin/sh';
+$defaultgid= -1; # -1 => usergroups; -2 => nousergroups
+@groupglobs= [ '.*', 0 ];
+regroupglobs();
+
+$file{'passwd','std'}= 'passwd';
+$file{'shadow','std'}= 'shadow';
+$file{'group','std'}= 'group';
+
+$file{'passwd','bsd'}= 'master.passwd';
+$file{'shadow','bsd'}= 'shadow-non-existent';
+$file{'group','bsd'}= 'group';
+
+@fields_pw_std= qw(USER PW UID GID COMMENT HOME SHELL);
+@fields_pw_bsd= qw(USER PW UID GID CLASS CHANGE EXPIRE COMMENT HOME SHELL);
+fields_fmt('PW','std');
+fields('GR',qw(GROUP PW GID USERS));
+fields('SP',qw(USER PW DAYSCHGD DAYSFIX DAYSEXP DAYSWARN DAYSEXPDIS DAYSDISD RESERVED));
+# The name field had better always be field 0 !
+
+END {
+    foreach $x (@unlocks) {
+	($fn, $style, $arg) = @$x;
+        &{ "unlock_$style" } ( $fn,$arg );
+    }
+}
+
+sub fields {
+    my ($pfx,@l) = @_;
+    my ($i, $v, $vn);
+    foreach $v (@l) { $vn= "${pfx}_$v"; $$vn = $i++; }
+    $vn= "${pfx}_fields"; $$vn= $i;
+}
+
+sub fields_fmt ($$) {
+    my ($pfx,$fmt) = @_;
+    my ($vn);
+    $vn= "fields_pw_$fmt";
+    die "unknown format $fmt\n" unless @$vn;
+    fields($pfx,@$vn);
+    $vn= "${pfx}_format";
+    $$vn= $fmt;
+}
+
+sub newentry {
+    my ($pfx,$name,@field_val_list) = @_;
+    my (@rv, $vn, $fn, $v, $i);
+    @rv= ();
+    $vn= "${pfx}_fields";
+    for ($i=0; $i<$$vn; $i++) { $rv[$i]= ''; }
+    die "@field_val_list ?" if @field_val_list % 2;
+    $rv[0] = $name;
+    while (@field_val_list) {
+	($fn,$v,@field_val_list) = @field_val_list;
+	$vn= "${pfx}_$fn";
+#print STDERR ">$fn|$v|$vn|$$vn<\n";
+	$rv[$$vn]= $v;
+    }
+    return @rv;
+}
+
+$|=1;
+$cdays= int(time/86400);
+
+@envs_createuser= qw(USER UID GID COMMENT HOME SHELL);
+
+if (@ARGV == 1 && length $ENV{'SYNC_ACCOUNTS_RUNVIA_INFO'}) {
+    @na= map {
+	s/\%([0-9a-f][0-9a-f])/ pack("C", hex $1) /ge;
+	$_;
+    } split(/\:/, $ENV{'SYNC_ACCOUNTS_RUNVIA_INFO'});
+    delete $ENV{'SYNC_ACCOUNTS_RUNVIA_INFO'};
+    $ta= shift @na;
+    $ENV{"SYNC_ACCOUNTS_RUNVIA_LOCKEDGOT_$ta"} = $ARGV[0];
+    @ARGV= @na;
+}
+
+@orgargv= @ARGV;
+
+while ($ARGV[0] =~ m/^-/) {
+    $_= shift @ARGV;
+    last if m/^--$/;
+    if (m/^-C/) {
+	$configfile= $';
+    } elsif (m/^-n$/) {
+	$no_act= 1;
+	$display= 0;
+    } elsif (m/^-q$/) {
+	$no_act= 1;
+	$display= 1;
+    } else {
+	die "unknown option $_\n";
+    }
+}
+
+die "hosts must not be specified with -q\n" if @ARGV && $display;
+
+for $h (@ARGV) { $wanthost{$h}= 1; }    
+
+open CF,"< $configfile" or die "$configfile: $!";
+
+sub fetchfile (\%$) {
+    my ($ary_ref,$get_str) = @_;
+
+    undef %$ary_ref;
+    open G,"$get_str" or die "$get_str: $!";
+    while (<G>) {
+	chomp;
+	m/^([^:]+)\:/ or die "$ch_name: $get_str:$.: $_ ?\n";
+	$ary_ref->{$1}= [ split(/\:/,$_,-1) ];
+    }
+    close G; $? and die "$ch_name: $get_str: exit code $?\n";
+}
+
+sub lockstyle_ ($$) {
+    my ($fn,$lock) = @_;
+
+    die "$configfile:$.: locking mechanism for $fn not".
+	" defined (use lockpasswd/lockgroup)\n";
+}
+
+sub abslock (@) {
+    my ($fn,$lock) = @_;
+
+    $fn= "/etc/$fn";
+    $lock= "$fn$lock" unless $lock =~ m,^/,;
+    return ($fn,$lock);
+}
+
+sub lock_none ($$) { return (abslock(@_))[0]; }
+sub unlock_none ($$) { }
+
+sub lock_link ($$) {
+    my ($fn,$lock) = abslock(@_);
+    link $fn,$lock or die "cannot lock $fn by creating $lock: $!\n";
+    return $fn;
+}
+sub unlock_link ($$) {
+    my ($fn,$lock) = abslock(@_);
+    unlink $lock or warn "unable to unlock by removing $lock: $!\n";
+}
+
+sub lock_runvia ($$) {
+    my ($fn,$lock) = @_;
+    my ($evn);
+    $evn= "SYNC_ACCOUNTS_RUNVIA_LOCKEDGOT_$fn";
+    return $ENV{$evn} if exists $ENV{$evn};
+
+    @na= map {
+	s/\W/ sprintf("%%%02x", unpack("C", $&)) /ge;
+	$_;
+    } ($fn,@orgargv);
+    $ENV{'SYNC_ACCOUNTS_RUNVIA_INFO'}= join(":", @na);
+    $ENV{'EDITOR'}= $0;
+    delete $ENV{'VISUAL'};
+    exec $lock; die "cannot lock $fn by executing $lock: $!\n";
+}
+sub unlock_runvia ($$) { }
+
+sub fetchownfile (\@$$$$) {
+    my ($ary_ref,$fn_str,$nfields,$style,$lock_arg) = @_;
+    my ($fn_use, $record, $fn_emsg);
+    $fn_emsg= $fn_str;
+    if (!$no_act) {
+	$fn_use= &{ "lock_$style" } ($fn_str, $lock_arg);
+	push @unlocks, [ $fn_str, $style, $lock_arg ];
+	$savebackto{$fn_str}= $fn_use;
+    } else {
+	$fn_use= $fn_emsg= "/etc/".$file{$fn_str,$PW_format};
+    }
+    open O,"$fn_use" or die "$fn_use ($fn_str): $!";
+    while (<O>) {
+	chomp;
+	if (m/^\#/ || !m/\S/) {
+	    $record= $_;
+	} else {
+	    $record= [ split(/\:/,$_,-1) ];
+	    die "$fn_emsg:$.:wrong number of fields:\`$_'\n"
+		unless @$record == $nfields;
+	}
+	push @$ary_ref, $record;
+    }
+    close O or die "$fn_use ($fn_str): $!";
+}
+
+sub diag ($) {
+    print "$diagstr: $_[0]\n" or die $!;
+}
+
+sub regroupglobs () {
+    $nogroups= (@groupglobs == 1 &&
+		$groupglobs[0]->[0] eq '.*' &&
+		!$groupglobs[0]->[1]);
+    $ggfunc= "sub wantsyncgroup {\n  \$_= \$_[0];\n  return\n";
+    for $g (@groupglobs) { $ggfunc.= "    m/^$g->[0]\$/ ? $g->[1] :\n"; }
+    $ggfunc.= "    die;\n};\n1;\n";
+#print STDERR "$ggfunc\n";
+    must_eval($ggfunc);
+}
+
+sub fetchown () {
+    if (!$own_fetchedpasswd) {
+#print STDERR ">$PW_fields<\n";
+	fetchownfile(@ownpasswd,'passwd',
+		     $PW_fields, $ch_lockstyle_passwd, $ch_lock_passwd);
+	$shadowfile= $file{'shadow',$PW_format};
+	if (stat("/etc/$shadowfile")) {
+	    $own_haveshadow= 1;
+	    $own_fetchedshadow= 1;
+	    fetchownfile(@ownshadow,'shadow',$SP_fields,'none','');
+	} elsif ($! == &ENOENT) {
+	    $own_haveshadow= 0;
+	} else {
+	    die "unable to check for /etc/$shadowfile: $!\n";
+	}
+	$own_fetchedpasswd= 1;
+    }
+    if (!$own_fetchedgroup) {
+	fetchownfile(@owngroup,'group',$GR_fields,
+		     $ch_lockstyle_group, $ch_lock_group);
+	$own_fetchedgroup= 1;
+    }	
+#print STDERR "fetchown() -> $#ownpasswd $#owngroup\n";
+}
+
+sub checkuid ($$) {
+    my ($useuid,$foruser) = @_;
+    for $e (@ownpasswd) {
+	next unless ref $e;
+	if ($e->[$PW_USER] ne $foruser && $e->[$PW_UID] == $useuid) {
+	    diag("uid clash with $e->[$PW_USER] (uid $e->[$PW_UID])");
+	    return 0;
+	}
+    }
+    return 1;
+}
+
+sub must_eval ($) {
+    eval $_[0] or die "$_[0] // $@";
+}
+
+sub copyfield ($$$$) {
+    my ($file,$entry,$field,$value) = @_;
+    must_eval("\$ary_ref= \\\@own$file; 1;");
+#print STDERR "copyfield($file,$entry,$field,$value)\n";
+    for $e (@$ary_ref) {
+#print STDERR "copyfield($file,$entry,$field,$value) $e->[0] $e->[field] ".join(':',@$e)."\n";
+	next unless $e->[0] eq $entry;
+	next if $e->[$field] eq $value;
+	$e->[$field]= $value;
+	must_eval("\$modified$file= 1; 1;");
+    }
+}
+
+sub fetchpasswd () {
+    return if $ch_fetchedpasswd;
+    die "$configfile:$.: getpasswd not specified for host $ch_name\n"
+	unless length $ch_getpasswd;
+    undef %remshadow;
+    fetchfile(%rempasswd,"$ch_getpasswd |");
+    if (length $ch_getshadow) {
+	fetchfile(%remshadow,"$ch_getshadow |");
+	for $k (keys %rempasswd) {
+	    $rempasswd{$k}->[$REM_PW]= 'xx' unless length $rempasswd{$k}->[$REM_PW];
+	}
+	for $k (keys %remshadow) {
+	    next unless exists $rempasswd{$k};
+	    $rempasswd{$k}->[$REM_PW]= $remshadow{$k}->[$SP_PW];
+	}
+    }
+    $ch_fetchedpasswd= 1;
+}
+
+sub fetchgroup () {
+    return if $ch_fetchedgroup;
+    die "$configfile:$.: getgroup not specified for host $ch_name\n"
+	unless length $ch_getgroup;
+    fetchfile(%remgroup,"$ch_getgroup |");
+    $ch_fetchedgroup= 1;
+}
+
+sub syncusergroup ($$) {
+    my ($lu,$luid) = @_;
+
+    return 1 if $defaultgid != -1;
+#print STDERR "syncusergroup($lu,$luid)\n";
+    $ugfound=0;
+    
+    for $e (@owngroup) {
+	next unless ref $e;
+	$samename= $e->[$GR_GROUP] eq $lu;
+	$sameid= $e->[$GR_GID] eq $luid;
+	next unless $samename || $sameid;
+	if (!$samename || !$sameid) {
+	    diag("local group $e->[$GR_GROUP] ($e->[$GR_GID]) mismatch vs.".
+		 " local user $lu ($luid)");
+	    return 0;
+	}
+	if ($ugfound) {
+	    diag("per-user group $lu ($luid) duplicated");
+	    return 0;
+	}
+	$ugfound=1;
+    }
+
+    return 1 if $ugfound;
+
+    if (!length $opt_createuser) {
+	diag("account creation not enabled, not creating per-user group");
+	return 0;
+    }
+    push @owngroup, [ newentry('GR', $lu,
+			       'PW', 'x',
+			       'GID', $luid) ];
+    $modifiedgroup= 1;
+    return 1;
+}
+
+sub hosthead ($) {
+    my ($th) = @_;
+    return if $hostheaddone eq $th;
+    print "\n\n" or die $! if length $hostheaddone;
+    print "==== $th ====\n" or die $!;
+    $hostheaddone= $th;
+}
+
+sub syncuser ($$) {
+    my ($lu,$ru) = @_;
+    my ($vn);
+
+#print STDERR "syncuser($lu,$ru)\n";
+    return if $doneuser{$lu}++;
+    next unless $ch_doinghost;
+    return if !length $ru;
+
+    fetchown();
+
+    if ($display) {
+	for $e (@ownpasswd) {
+	    next unless ref $e && $e->[$PW_USER] eq $lu;
+	    hosthead("from $ch_name");
+	    print ($lu eq $ru ? " $lu" : " $lu($ru)") or die $!;
+	    print "<DUPLICATE>" if $displaydone{$lu}++;
+	}
+	return;
+    }
+    
+    $diagstr= "user $lu from $ch_name!$ru";
+
+#print STDERR "syncuser($lu,$ru) doing\n";
+    fetchpasswd();
+
+    if (!$rempasswd{$ru}) { diag("no remote entry"); return; }
+    if (length $ch_getshadow && exists $remshadow{$ru} &&
+	length $remshadow{$ru}->[$SP_DAYSDISD]) {
+	diag("remote account disabled in shadow");
+	return;
+    }
+
+    if (!grep(ref $_ && $_->[$PW_USER] eq $lu, @ownpasswd)) {
+	if (!length $opt_createuser) { diag("account creation not enabled"); return; }
+	if ($no_act) { diag("-n specified; not creating account"); return; }
+
+	if ($opt_sameuid) {
+	    $useuid= $rempasswd{$ru}->[$REM_UID];
+	    $usegid= $rempasswd{$ru}->[$REM_GID];
+	} else {
+	    die "nousergroups specified, cannot create users\n" if $defaultgid==-2;
+	    length $ch_uidmin or die "no uidmin specified, cannot create users\n";
+	    length $ch_uidmax or die "no uidmax specified, cannot create users\n";
+	    $ch_uidmin<$ch_uidmax or die "uidmin>=uidmax, cannot create users\n";
+	
+	    $useuid= $ch_uidmin;
+	    for $e ($defaultgid==-1 ? (@ownpasswd, @owngroup) : (@ownpasswd)) {
+		next unless ref $e;
+		$tuid= $e->[$PW_UID]; next if $tuid<$useuid || $tuid>$ch_uidmax;
+		if ($tuid==$ch_uidmax) {
+		    diag("uid (or gid?) $ch_uidmax used, cannot create users");
+		    return;
+		}
+		$useuid= $tuid+1;
+	    }
+	    $usegid= $defaultgid==-1 ? $useuid : $defaultgid;
+	}
+	
+	@newpwent= newentry('PW', $lu,
+			    'PW', 'x',
+			    'UID', $useuid,
+			    'GID', $usegid,
+			    'COMMENT', $rempasswd{$ru}->[$REM_COMMENT],
+			    'HOME', "$ch_homebase/$lu",
+			    'SHELL', $ch_defaultshell);
+	
+	defined($c= open CU,"-|") or die $!;
+	if (!$c) {
+	    @unlocks= ();
+	    defined($c2= open STDIN,"-|") or die $!;
+	    if (!$c2) {
+		print STDOUT join(':',@newpwent),"\n" or die $!;
+		exit 0;
+	    }
+	    for ($i=0; $i<@envs_createuser; $i++) {
+		$vn= "PW_$envs_createuser[$i]";
+#print STDERR ">$i|$vn|$$vn|$newpwent[$$vn]<\n";
+		$ENV{"SYNCUSER_CREATE_$envs_createuser[$i]"}= $newpwent[$$vn];
+	    }
+	    exec $opt_createuser; die "$configfile:$.: ($lu): $opt_createuser: $!\n";
+	}
+	$newpwent= <CU>;
+	close CU; $? and die "$configfile:$.: ($lu): $opt_createuser: code $?\n";
+	chomp $newpwent;
+	if (length $newpwent) {
+	    if ($newpwent !~ m/\:/) { diag("creation script demurred"); return; }
+	    @newpwent= split(/\:/,$newpwent,-1);
+	}
+	die "$opt_createuser: bad result: \`".join(':',@newpwent)."\'\n"
+	    if @newpwent != $PW_fields or $newpwent[$PW_USER] ne $lu;
+	checkuid($newpwent[$PW_UID],$lu) or return;
+	if ($own_haveshadow) {
+	    push @ownshadow, [ newentry('SP', $lu,
+					'PW', 'x',
+					'DAYSCHGD', $cdays,
+					'DAYSFIX', 0,
+					'DAYSEXP', 99999,
+					'DAYSEXPDIS', 7) ];
+	    $modifiedshadow= 1;
+	}
+	syncusergroup($lu,$newpwent[$PW_UID]) or return;
+	push @ownpasswd,[ @newpwent ];
+	$modifiedpasswd= 1;
+    }
+
+    for $e (@ownpasswd) {
+	next unless ref $e && $e->[$PW_USER] eq $lu;
+	syncusergroup($lu,$e->[$PW_UID]) or return;
+    }
+
+    $ruid= $rempasswd{$ru}->[$REM_UID];
+    $rgid= $rempasswd{$ru}->[$REM_GID];
+    if ($opt_sameuid && checkuid($ruid,$lu)) {
+	for $e (@ownpasswd) {
+	    next unless ref $e && $e->[$PW_USER] eq $lu;
+	    $luid= $e->[$PW_UID]; $lgid= $e->[$PW_GID];
+	    die "$diagstr: local uid $luid, remote uid $ruid\n" if $luid ne $ruid;
+	    die "$diagstr: local gid $lgid, remote gid $rgid\n" if $lgid ne $rgid;
+	}
+    }
+
+#print STDERR "syncuser($lu,$ru) exists $own_haveshadow\n";
+    if ($own_haveshadow && grep(ref $_ && $_->[$PW_USER] eq $lu, @ownshadow)) {
+#print STDERR "syncuser($lu,$ru) shadow $rempasswd{$ru}->[$REM_PW]\n";
+	copyfield('shadow',$lu,$SP_PW, $rempasswd{$ru}->[$REM_PW]);
+    } else {
+#print STDERR "syncuser($lu,$ru) passwd $rempasswd{$ru}->[$REM_PW]\n";
+	copyfield('passwd',$lu,$PW_PW, $rempasswd{$ru}->[$REM_PW]);
+    }
+    copyfield('passwd',$lu,$PW_COMMENT, $rempasswd{$ru}->[$REM_COMMENT]);
+
+    $newsh= $rempasswd{$ru}->[$REM_SHELL];
+    $oksh= $checkedshell{$newsh};
+    if (!length $oksh) { $checkedshell{$newsh}= $oksh= (-x $newsh) ? 1 : 0; }
+    copyfield('passwd',$lu,$PW_SHELL, $newsh) if $oksh;
+
+    if (!$nogroups) {
+	for $e (@owngroup) {
+	    next unless ref $e;
+	    $tgroup= $e->[$GR_GROUP];
+#print STDERR "syncuser($lu,$ru) group $tgroup\n";
+	    next unless &wantsyncgroup($tgroup);
+#print STDERR "syncuser($lu,$ru) group $tgroup yes\n";
+	    fetchgroup();
+	    if (!exists $remgroup{$tgroup}) {
+		diag("group $tgroup: not on remote host");
+		next;
+	    }
+	    $inremote= grep($_ eq $ru, split(/\,/,$remgroup{$tgroup}->[$GR_USERS]));
+	    $cusers= $e->[$GR_USERS]; $inlocal= grep($_ eq $lu, split(/\,/,$cusers));
+	    if ($inremote && !$inlocal) {
+		$cusers.= ',' if length $cusers;
+		$cusers.= $lu;
+	    } elsif ($inlocal && !$inremote) {
+		$cusers= join(',', grep($_ ne $lu, split(/\,/, $cusers)));
+	    } else {
+		next;
+	    }
+	    $e->[$GR_USERS]= $cusers;
+	    $modifiedgroup= 1;
+	}
+    }
+}
+
+sub banner () {
+    return if $bannerdone;
+    print "\n" or die $!; system 'date'; $? and die $?;
+    $bannerdone= 1;
+}
+
+sub finish () {
+    my ($record);
+
+    for $h (keys %wanthost) {
+	die "host $h not in config file\n" if $wanthost{$h};
+    }
+
+    if ($display) {
+#print STDERR "\n\nfinish display=$display pw=$pw\n\n";
+	for $e (@ownpasswd) {
+	    next unless ref $e;
+	    $tu= $e->[$PW_USER];
+	    $tuid= $e->[$PW_UID];
+	    next if $displaydone{$tu};
+	    $tpw= $e->[$PW_PW];
+#print STDERR ">$tu|$tpw<\n";
+	    for $e2 (@ownshadow) {
+		next unless ref $e2 && $e2->[$SP_USER] eq $tu;
+		$tpw= $e2->[$SP_PW]; last;
+	    }
+	    $tpw= length($tpw)>=13 ? 1 : length($tpw) ? -1 : 0;
+	    $head= ($tpw == 1 ? "unsynched" :
+		    $tpw == 0 ? "unsynched, passwordless" :
+		    "unsynched, no-logins").
+		    ($tuid < 100 ? " system account" : " normal user");
+	    $unsynch_type{$head} .= " $e->[$PW_USER]";
+	}
+	foreach $head (sort keys %unsynch_type) {
+	    hosthead($head);
+	    print $unsynch_type{$head} or die $!;
+	}
+	print "\n\n" or die $!;
+	exit 0;
+    }
+    
+    umask 077;
+    for $file (qw(passwd shadow group)) {
+	$realfile= $file{$file,$PW_format};
+	must_eval("\$modified= \$modified$file; \$data_ref= \\\@own$file;".
+		  " \$fetched= \$own_fetched$file; 1;");
+	next if !$modified;
+	die $file unless $fetched;
+	banner();
+	if ($no_act) {
+	    $newfileinst= "/etc/$realfile";
+	    $newfile= "$realfile.new";
+	} else {
+	    $newfileinst= $savebackto{$file};
+	    $newfile= "$newfileinst.new";
+	}
+	open NF,"> $newfile" or die "$newfile: $!";
+	for $e (@$data_ref) {
+	    $record= ref $e ? join(':',@$e) : $e;
+	    print NF $record,"\n" or die $!;
+	}
+	close NF or die $!;
+	system 'diff','-U0','--label',$realfile,$newfileinst,
+                            '--label',"$realfile.new",$newfile;
+	$?==256 or die $?;
+	if (!$no_act) {
+	    (@stats= stat $newfileinst) or die "$file: $!";
+	    chown $stats[4],$stats[5], $newfile or die $!;
+	    chmod $stats[2] & 07777, $newfile or die $!;
+	    rename $newfile, $newfileinst or die $!;
+	}
+    }
+    exit 0;
+}
+
+while (<CF>) {
+    chomp;
+    s/^\s*//; s/\s*$//;
+    next if m/^\#/ || !m/\S/;
+    finish() if m/^end$/;
+    if (m/^host\s+(\S+)$/) {
+	$ch_name= $1;
+	$ch_getpasswd= $ch_getgroup= $ch_getshadow= '';
+	$ch_fetchedpasswd= $ch_fetchedgroup;
+	if (!@ARGV) {
+	    $ch_doinghost= 1;
+	} elsif (exists $wanthost{$ch_name}) {
+	    $wanthost{$ch_name}= 0;
+	    $ch_doinghost= 1;
+	} else {
+	    $ch_doinghost= 0;
+	}
+	fields_fmt('REM','std');
+    } elsif (m/^(getpasswd|getshadow|getgroup)\s+(.*\S)$/) {
+	must_eval("\$ch_$1= \$2; 1;");
+    } elsif (m/^(local|remote)format\s+(\w+)$/) {
+	fields_fmt($1 eq 'local' ? 'PW' :
+		   $1 eq 'remote' ? 'REM' : die,
+		   $2);
+    } elsif (m/^lock(passwd|group)\s+(runvia|link)\s+(\S+)$/) {
+	must_eval("\$ch_lock_$1= \$3; \$ch_lockstyle_$1= \$2; 1;");
+    } elsif (m/^lock(passwd|group)\s+(none)$/) {
+	must_eval("\$ch_lockstyle_$1= \$2; 1;");
+    } elsif (m,^(homebase|defaultshell)\s+(/\S+)$,) {
+	must_eval("\$ch_$1= \$2; 1;");
+    } elsif (m/^(uidmin|uidmax)\s+(\d+)$/ && $2>0) {
+	must_eval("\$ch_$1= \$2; 1;");
+    } elsif (m/^createuser$/) {
+	$opt_createuser= $def_createuser;
+    } elsif (m/^nocreateuser$/) {
+	$opt_createuser= '';
+    } elsif (m/^createuser\s+(\S+)$/) {
+	$opt_createuser= $1;
+    } elsif (m/^logfile\s+(.*\S)$/) {
+	if (!$no_act) {
+	    open STDOUT,">> $1" or die "$1: $!"; $|=1;
+	    $!=0; system 'date'; $? and die "date: $! $?\n";
+	} elsif (!$display) {
+	    print "would log to $1\n" or die $!;
+	}
+    } elsif (m/^(no|)(sameuid)$/) {
+	must_eval("\$opt_$2= ".($1 eq 'no' ? 0 : 1)."; 1;");
+    } elsif (m/^usergroups$/) {
+	$defaultgid= -1;
+    } elsif (m/^nousergroups$/) {
+	$defaultgid= -2;
+    } elsif (m/^defaultgid\s+(\d+)$/) {
+	$defaultgid= $1;
+    } elsif (m/^(no|)group\s+([-+.0-9a-zA-Z*?]+)$/) {
+	$yes= $1 eq 'no' ? 0 : 1;
+	$_= $2;
+	@groupglobs=() if $_ eq '*';
+	s/[-+._]/\\$&/g;
+	s/\*/\.\*/g;
+	s/\?/\./g;
+	unshift @groupglobs, [ $_, $yes ];
+	regroupglobs();
+    } elsif (m/^user\s+(\S+)$/) {
+	syncuser($1,$1);
+    } elsif (m/^user\s+(\S+)\s+remote\=(\S+)$/) {
+	syncuser($1,$2);
+    } elsif (m/^nouser\s+(\S+)$/) {
+	syncuser($1,'');
+    } elsif (m/^users\s+(\d+)\-(\d+)$/) {
+	$tmin= $1; $tmax= $2; $except= $3;
+	fetchpasswd();
+	for $k (keys %rempasswd) {
+	    $tuid= $rempasswd{$k}->[2];
+	    next if $tuid<$1 or $tuid>$2;
+	    syncuser($k,$k);
+	}
+    } elsif (m/^addhere$/) {
+    } else {
+	die "$configfile:$.: unknown directive\n";
+    }
+}
+
+die "$configfile:$.: missing \`end', or read error\n";

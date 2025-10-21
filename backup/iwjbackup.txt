@@ -1,0 +1,204 @@
+iwjbackup.txt
+documentation file
+Copyright - AND NO WARRANTY - see notes at bottom of file for details.
+
+This is a quick summary of the backup scripts, and some comments on
+some of the config files: it's a bit patchy and might have the odd
+ommission. The canonical source is the sources, as always :->
+
+
+To run, the contents of /etc/chiark-backup should be:
+
+warnings.*: files defining how many warnings you get as the system is
+brought down to do backups. The defaults are fine.
+
+settings.pl: generic config file: in particular, the name of the tape
+device is set here.
+
+settings.sh: generic config file for shell scripts.  Currently only
+contains some options for the lvm snapshotter.
+
+tape.*: conventionally, each tape you're going to use in the backup
+cycle has a tape number, a name and a config file.  The tape numbers
+in use at Relativity are digit strings like `512'.  The name is a
+combination of rotation set and volume number; rotation sets are
+typically a single letter (`s', `t', `u', `v') at Relativity and
+volumes a single digit (`0', `1', `2') at Relativity.  You need at
+least two tapes as the system won't write a backup on the same tape it
+wrote the last one to.
+
+There are also conventionally incremental tapes whose names are a
+fixed letter (`k' in the current scheme) followed by a rotation
+letter.  At Relativity we have two of these, `ks' and `kt'.
+
+Syntax of the tape.* files for full dump tapes:
+  filesystems X
+  next N
+  end
+
+where N is the name of the next tape in the *full dump* sequence
+(which should be circular; eg
+v0->v1->v2->s0->s1->s1->t0->t1->t2->u0->u1->u2->v0->...
+and X is a filesystem group name (typically the same as the volume
+number).
+
+Each defined filesystem group has a name and a config file
+fsys.<name>.  These files define what is backed up and how.  The
+filesystem `all' must also exist; it's used for incremental backups
+(and it must exist even if you don't do incrementals).
+
+In the fsys.* files:
+  Empty lines and lines starting '#' are comments and ignored.
+  Lines starting `excludedir' given regexps of things to exclude
+   (temp dirs, Netscape's cache, etc).
+  Lines starting `include' say to include another file when reading
+   this one.
+  Lines starting `prefix' give a command prefix necessary to
+   run things on a remote machine:
+     prefix <prefix-name> <command-part>
+  Other lines should be of the form
+    [<device name>:]<directory name> <backup-type>[,<options>]
+  for local backups, or
+    [<device name>:]<directory name> <backup-type>[,<options>] <prefix-name>
+  for remote backups.
+The file (including any included files) must end with the word 'end'
+on a line of its own.
+
+Valid values for <backup-type> are
+  cpio
+    uses cpio to produce tar-format backups
+  dump
+    uses dump to dump entire filesystems
+    <directory name> should be a mount-point
+  gtar
+    uses GNU tar to produce GNU tar format backups and -N-based
+    semi-incrementals (not --incremental or --listed-incremental)
+  zafio
+    uses afio to compress each file as it is backed up
+  ntfsimage
+    for NTFS volumes, requires device name
+Only `dump' and `gtar' type backups perform any kind of incremental
+backups.
+
+<options> is a comma-separated list of <option> or <option>=<value>.
+Options supported:
+
+  gz[i][=<compressionlevel>]
+    Indicates that the whole stream should be compressed with gzip.
+    The compression level defaults to 1 if gz is specified by the
+    level isn't.  gzi appliies only to the incrementals; gz applies to
+    both unless gzi is also specified.  compression level 0 means not
+    to run gzip at all and is the default if gz[i] is not mentioned.
+
+  snap=<snapkind>
+    Indicates that the filesystem should be frozen before the backup
+    by using /etc/chiark-backup/snap/<snapkind>.  See the head comment
+    in /etc/chiark-backup/snap/lvm for details of how this works.
+    When snap= is used, the block device must be specified.
+
+  noinc
+    Suppress incrementals.
+
+expected-diffs is a config file to indicate which 
+filesystems should *not* be backed up. The scripts do a config
+check which involves checking that:
+ * all filesystems to be backed up are present
+ * all filesystems that are present are backed up
+expected-diffs allows you to make exceptions to this; backing 
+up your CDROM drive is a bit pointless, frex.
+The format here is:
+<prefixchar><mountpoint>
+
+where <prefixchar> is ?, ! or nothing, and 
+<mountpoint> is <prefix>:<mountpoint> for a remote fs or
+<mountpoint> for a local one
+(examples: "mnementh:/cdrom", "/cdrom").
+If <prefixchar> is nothing, the scripts will complain if the fs
+is mounted. If it is !, they will complain if it is not mounted.
+If ? they won't complain either way (useful for devices that are
+not always mounted, like /cdrom).
+
+
+You may also create `bringup-hook', a script (or program) which will
+be run by `bringup' at the end.
+
+
+Useful scripts (all in /usr/bin):
+
+backup-checkallused: this only does a check of the configuration
+files.  It should give a cryptic summary of the configuration and
+print 'configuration ok'. If not, fix your config files :->
+You have to create the file /var/lib/chiark-backup/last-tape
+containing the id of a tape; this helps backup-checkallused know where
+to start iterating over tapes.  Any tapeid will do.  (But don't make
+it the same as the one you want to back up to first.)
+
+backup-loaded: this tells the scripts that a currently unlabelled tape
+should be treated as tape X: eg:
+    backup-loaded b3
+will cause it to treat it as tape `b3'.  NB: this won't override the
+TAPEID label written on the tape; it's just for use with previously
+unused tapes.  This applies only to the next time the backup scripts
+are invoked.  You can say just
+    backup-loaded
+to go back to the default behaviour, which is to fail if the tape has
+no TAPEID.
+
+backup-driver: this is the script to actually run to do a backup.  If
+run from the command line, give it the argument 'test' - otherwise it
+will attempt to run bringup to change runlevel, on the assumption that
+it was run from inittab (see below).  The status report email will be
+sent to whatever the unqualified local-part `dump-reports' points to.
+
+backup-takedown: This is for running a reduced level of system
+services during backups.  Usage: takedown <freq> where <freq> can be
+`now', `soon' or nothing depending on number of warning messages
+desired - these correspond to warnings.* files.
+
+To use this you'll need to configure init:
+ * set up runlevel 5 to provide the level of services you want
+   (by tweaking the symlinks in /etc/rc5.d or equivalent)
+ * Add the following to /etc/inittab (tweak paths and VC number
+   if desired):
+
+  # Runlevel 5 is set up to run a reduced level of services during
+  # backups. (currently this means: no squid, no webserver, no newsserver)
+  # We also run the backup script automatically on entering runlevel 5:
+  dm:5:once:backup-driver </dev/tty8 >/dev/tty8 2>&1
+
+ * takedown can be run from the command line or via cron.
+
+backup-whatsthis: a simple script to display the TAPEID of the current
+tape and optionally list its contents.  This script is a bit of a hack
+and may not be fully reliable:
+
+ Usage:
+ whatsthis [--list [n]]
+
+WARNING: it's currently hardwired to assume `cpio' type backups
+when listing; it could be trivially hardwired to assume `zafio' 
+or with slightly more effort it could be done properly :->.
+
+
+COPYRIGHT and LACK OF WARRANTY information
+
+This file is part of chiark backup, a system for backing up GNU/Linux and
+other UN*X-compatible machines, as used on chiark.greenend.org.uk.
+
+chiark backup is:
+ Copyright (C) 1997-1998,2000-2001,2007
+                    Ian Jackson <ian@chiark.greenend.org.uk>
+ Copyright (C) 1999 Peter Maydell <pmaydell@chiark.greenend.org.uk>
+
+This is free software; you can redistribute it and/or modify it under the
+terms of the GNU General Public License as published by the Free Software
+Foundation; either version 3, or (at your option) any later version.
+
+This is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
+details.
+
+You should have received a copy of the GNU General Public License along
+with this program; if not, consult the Free Software Foundation's
+website at www.fsf.org, or the GNU Project website at www.gnu.org.

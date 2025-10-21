@@ -1,0 +1,82 @@
+#!/bin/bash
+# invoked by backup scripts as
+#    remountrocp snap $vardir $device $mountpoint
+#		remounts $mountpoint readonly
+#		copies data to $vardir/snap-mount
+#		remounts $mountpoint readwrite
+#    remountrocp drop $vardir
+#		deletes $vardir/snap-mount
+
+set -e
+snapkind=remountrocp
+: ${lvm_vg:=}
+remountrocp_fs=ext2
+. ${CHIARK_BACKUP_SHAREDIR:-/usr/share/chiark-backup}/snap-common
+
+#---------- clean up anything
+
+vgroup=$lvm_vg
+lvmdropcore
+
+lastsettings="$vardir/remountrocp-settings"
+test ! -f $lastsettings || . $lastsettings
+
+if test "$opmode" = drop; then
+	test -z "$last_mountpoint" || mount -o remount,rw $last_mountpoint
+	rm -f $lastsettings
+	echo 'remountrocp snap dropped'
+	exit 0
+fi
+
+#---------- create snapshot
+
+if [ -z "$lvm_lvsize_opts" ]; then
+	lvmextentscore1
+
+	df_out="$(really df -P --block-size=$extsize $mountpoint)"
+	extents2="$(printf "%s" "$df_out" | awk '/^\// {print $3}')"
+	extents2=$(( ($extents2*150+102399)/102400 + 4 ))
+
+	lvmextentscore2
+fi
+
+lvmcreatecore1
+
+cat >$lastsettings.new <<END
+last_mountpoint=$mountpoint
+END
+mv -f $lastsettings.new $lastsettings
+
+lvcreate \
+	$lvm_lvtools_opts \
+	$lvm_lvsize_opts \
+	-n $lvm_lv \
+	$lvm_lvcreate_opts \
+	$vgroup \
+	$lvm_lvcreate_args
+
+mkfs -t $remountrocp_fs -q "$lvpath"
+
+mkdir -- "$snmnt"
+mount -t $remountrocp_fs $lvm_mount_opts "$lvpath" "$snmnt"
+echo ' copy filesystem created and mounted'
+
+attempts=10
+while true; do
+	if mount -o remount,ro "$mountpoint"; then break; fi
+	attempts=$(( $attempts - 1 ))
+	if [ $attempts = 0 ]; then
+		echo >&2 'cannot remount readonly'
+		exit 1
+	fi
+	sleep 1
+done
+trap "set +e; mount -o remount,rw $mountpoint; exit 12" 0
+echo ' source remounted readonly, copying...'
+cp -ax -- "$mountpoint/." "$snmnt/."
+echo ' finalising...'
+mount -o remount,rw "$mountpoint"
+trap '' 0
+mount -o remount,ro "$lvpath"
+
+echo 'remountrocp snap activated'

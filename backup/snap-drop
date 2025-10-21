@@ -1,0 +1,10 @@
+#!/bin/sh
+set -e
+vd=/var/lib/chiark-backup
+if [ "x$1" != "x" ]; then
+	vd="$1"; shift
+fi
+cd "$vd"
+test -f snap-drop || exit 0
+sh -x snap-drop || true
+rm snap-drop

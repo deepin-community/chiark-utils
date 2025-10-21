@@ -1,0 +1,30 @@
+#!/bin/sh
+
+set -e
+
+removes () {
+	rm -f -- "$vardir/snap-mount" "$vardir/snap-device"
+}
+
+vardir="$2"
+
+case "$#.$1" in
+2.drop)
+	fs="$(readlink "$vardir/snap-mount")"
+	removes
+	mount -vo remount,rw "$fs" || true
+	;;
+4.snap)
+	removes
+	mount -vo remount,ro "$4"
+	ln -s -- "$3" "$vardir/snap-device"
+	ln -s -- "$4" "$vardir/snap-mount"
+	;;
+*)
+	cat >&2 <<'END'
+usage: .../remount snap VARDIR DEV MOUNT
+       .../remount drop VARDIR
+END
+	exit 1
+	;;
+esac

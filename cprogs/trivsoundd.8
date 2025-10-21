@@ -1,0 +1,25 @@
+.TH writebuffer 1 2001-10-21 chiark-backup
+.SH NAME
+writebuffer \- write output to devices which don't like constant stopping and starting
+.SH SYNOPSIS
+.B writebuffer
+.RB [ --mlock ]
+.RI [ size ]
+.SH DESCRIPTION
+.B writebuffer
+reads data on standard input and writes it to standard output.  It
+will buffer internally up to \fIsize\fR megabytes and will only write
+data when the buffer is at least 75% full or when there is no more
+input to fill the buffer.
+.PP
+It is intended for use in situations where many small writes are
+undesirable for performance reasons, e.g. tape drives.
+.SH OPTIONS
+.TP
+.B --mlock
+Calls
+.BR mlock (2)
+to lock the buffer into memory.
+.SH "SEE ALSO"
+.BR readbuffer (1),
+.BR mlock (2)

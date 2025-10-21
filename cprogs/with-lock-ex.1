@@ -1,0 +1,147 @@
+.TH WITH-LOCK-EX "1" "July 2003" "Debian" "Chiark-utils-bin"
+.SH NAME
+with-lock-ex \- file locker
+.SH SYNOPSIS
+.B with-lock-ex
+.BR \-w \||\| \-q \||\| \-f
+.I lockfile command 
+.IR args \ \|.\|.\|.
+.br
+.SH DESCRIPTION
+with-lock-ex will open and lock the lockfile for writing and then feed
+the remainder of its arguments to
+.BR exec (2);
+when that process terminates the fd will be closed and the file
+unlocked automatically by the kernel.
+.PP
+If the file does not exist it is created, with permissions
+.B rw
+for each user class for which the umask has
+.BR w .
+.SH OPTIONS
+.TP
+.B \-w
+Wait for the lock to be available.
+.TP
+.B \-f
+Fail (printing a message to stderr and exiting 255) if the lock cannot
+be acquired immediately because another process has it.
+.TP
+.B \-q
+Silently do nothing (ie, exit 0 instead of executing the specified
+process) if the lock cannot be acquired immediately because another
+process has it.
+.SH STALE LOCKS
+The locking protocol used does not suffer from stale locks.  If the
+lock cannot be acquired, one or more running processes must currently
+hold the lock; if the lock needs to be freed those processes should be
+killed.
+.PP
+Under no circumstances should `stale lock cleaner' cron jobs, or the
+like, be instituted.  In systems where a great many locks may exist,
+old lockfiles may be removed from cron but only if each lock is
+acquired before the lockfile is removed, for example with
+.IP
+.B with-lock-ex -q
+.I lockfile
+.B rm
+.I lockfile
+.SH DEADLOCKS
+There is no deadlock detection.  In a system with several locks, a
+lock hierarchy should be established, such that for every pair of
+locks
+.I A
+and
+.I B
+which a process might lock simultaneously, either
+.IR A > B
+or
+.IR B > A
+where the relation > is transitive and noncyclic.
+.PP
+Then, for any two locks
+.I X
+and
+.I Y
+with
+.IR X > Y
+it is forbidden to acquire
+.I X
+while holding
+.IR Y .
+Instead, acquire
+.I X
+first, or release
+.I Y
+before (re)acquiring
+.I X
+and
+.I Y
+in that order.
+.PP
+(There are more complicated ways of avoiding deadlocks, but a lock
+hierarchy is simple to understand and implement.  If it does not meet
+your needs, consult the literature.)
+.SH LOCKING PROTOCOL
+The locking protocol used by
+.B with-lock-ex
+is as follows:
+.PP
+The lock is held by a process (or group of processes) which holds an
+fcntl exclusive lock on the first byte of the plain file which has the
+specified name.  A holder of the lock (and only a holder of the lock)
+may delete the file or change the inode to which the name refers, and
+as soon as it does so it ceases to hold the lock.
+.PP
+Any process may create the file if it does not exist.  There is no
+need for the file to contain any actual data.  Indeed, actually using
+the file for data storage is strongly disrecommended, as this will
+foreclose most strategies for reliable update.  Use a separate
+lockfile instead.
+.PP
+Ability to obtain the lock corresponds to write permission on the file
+(and of course permission to create the  file, if it does not already
+exist).  However, processes with only read permission on the file can
+prevent the lock being acquired at all; therefore lockfiles should not
+usually be world-readable.
+.PP
+When a (group of) processes wishes to acquire the lock, it should open
+the file
+(with
+.BR O_CREAT )
+and lock it with
+.BR fcntl (2)
+.BR F_RWLCK ,
+operation
+.B F_SETLK
+or
+.BR F_SETLKW .
+If this succeeds it should fstat the file descriptor it has, and the
+file by its path.  If the device and inode match then the lock has
+been acquired and remains acquired until that group of processes
+changes which file the name refers to, deletes the file, or releases
+the fcntl lock.  If they do not then another process acquired the lock
+and deleted the file in the meantime; you must now close your
+filedescriptor and start again.
+.B with-lock-ex
+follows this specification.
+.PP
+Note that
+.BR flock (2)
+is a different kind of lock to
+.BR fcntl (2).
+.B with-lock-ex
+uses
+.BR fcntl .
+.SH AUTHOR
+This Manual page was written by Matthew Vernon <matthew@debian.org>
+and enhanced by Ian Jackson <ian@chiark.greenend.org.uk>, in 2003, but
+may be used by anyone.
+.SH COPYRIGHT
+with-lock-ex was written by Ian Jackson <ian@chiark.greenend.org.uk>
+in 1993, 1994, 1995, 1996, 1998, 1999. He has placed it in the public
+domain. 
+.SH "SEE ALSO"
+.BR fcntl (2),
+.BR flock (2),
+.BR chmod (2)

@@ -1,0 +1,268 @@
+#!/usr/bin/perl -w
+#
+# Copyright 2006 Ian Jackson <ijackson@chiark.greenend.org.uk>
+#
+# This script and its documentation (if any) are free software; you
+# can redistribute it and/or modify them under the terms of the GNU
+# General Public License as published by the Free Software Foundation;
+# either version 3, or (at your option) any later version.
+# 
+# chiark-named-conf and its manpage are distributed in the hope that
+# it will be useful, but WITHOUT ANY WARRANTY; without even the
+# implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR
+# PURPOSE.  See the GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, consult the Free Software Foundation's
+# website at www.fsf.org, or the GNU Project website at www.gnu.org.
+
+use strict;
+
+our $usage = <<'END';
+usage:
+  expire-iso8601 [<options>] <number>x<interval> [<number>x<interval> ...]
+options:
+   -u<unitlen>  <interval> is measured in units of <unitlen> seconds
+                   (default is 86400, so <interval> is in days)
+   -s<slop>       allow kept items to be <slop> seconds shorter or
+                   longer apart than specified; default is 0.1 unit
+   -n             do not really delete
+   -r             recursive removal (rm -r)
+   --rename-only  rename to *.rm, but do not delete
+   --help
+example:
+   /home/ian/junk/expire-iso8601 14x1 4x7
+      uses units of 86400s (1 day) with a slop of 8640
+      it keeps 14 daily items
+       (that is 14 items, dated no less than 86400-8640 apart)
+      and 4 weekly items
+       (that is 4 items, dated no less than 7*86400-8640 apart)
+      the 14 daily and 7 weekly items may be the same, or not
+   There is no need to sort the list of <number>x<interval> pairs.
+exit status:
+   0                   ok
+   4                   rm failed
+   8                   bad usage
+  -1                   catastrophic failure
+END
+
+use POSIX;
+use Carp;
+use Data::Dumper;
+use Date::Parse;
+use DateTime::Format::Strptime;
+
+$|=1;
+
+our @oldfiles;
+our @files;
+our $enable = 2;
+our $recurse = 1;
+our $unit = 86400;
+our $slop;
+our $debug = 0;
+our @intervals;
+
+sub badusage ($) {
+  print STDERR "bad usage: $_[0]\n$usage" or die $!;
+  exit 8;
+}
+
+sub scan () {
+#  my $strp = DateTime::Format::Strptime->new();
+  foreach my $f (<[0-9]*>) {
+    if ($f  !~ m/^ \d\d\d\d - \d\d - \d\d 
+		 (?: T \d\d \: \d\d (?: \: \d\d )?
+		   (?: [-+] \d{1,2} \:? \d\d )? )? 
+		 ( \.rm )? $/x) {
+      print STDERR "ignoring $f\n";
+    }
+
+    if ($1) {
+      push @oldfiles, $f;
+      next;
+    }
+
+    my @t = Date::Parse::strptime($f);
+    @t = map { $_ // 0 } @t;
+    my $t = mktime @t;
+#    m
+#    my $t = $strp->parse_datetime($f);
+#    $t = $t->epoch();
+#    my @t = Date::Parse::strptime($f);
+#print STDERR Dumper(\@t);
+#    my $t = mktime(@t);
+#    $!=0; $?=0; my $t = `date -d '$&' +%s`;
+#    die "date(!) failed on $&: $? $!" if $! || $?;
+#    chomp $t or confess;
+    push @files, { F => $f, T => $t, U => [] };
+  }
+}
+
+sub precomp () {
+  if (!@files) {
+    print STDERR "none at all yet!\n";
+    exit 0;
+  }
+
+  # newest first, which means biggest T
+  @files = sort { $b->{T} <=> $a->{T} || $b->{F} cmp $a->{F} } @files;
+  my $newest_t = $files[0]{T};
+  $_->{A} = ($newest_t - $_->{T}) / $unit foreach @files;
+  $slop /= $unit;
+
+  push @{$files[0]{U}}, "newest";
+
+  print DEBUG Dumper(scalar(@files), \@files, \@intervals) if $debug >= 2;
+}
+
+sub flag ($) {
+  my ($int) = @_;
+  my $n = $int->{N};
+  my $d = $int->{D};
+  my $dmin = $d - $slop;
+  my $dmax = $d + $slop;
+  my $spec = $int->{Spec};
+  my $start_age = ($n-1) * $d - $slop;
+  my $i = 0;
+  my $insufficiently_old = 0;
+
+  print DEBUG "FLAG $spec sa=$start_age dmin=$dmin dmax=$dmax\n";
+
+  # find $i, the youngest which is at least $start_age
+  for (;;) {
+    print DEBUG "i #$i $files[$i]{A}\n";
+    last if $files[$i]{A} >= $start_age;
+    if ($i == $#files) {
+      $insufficiently_old = 1;
+      print STDERR "insufficiently old for $spec\n";
+      last;
+    }
+    $i++;
+  }
+
+  my $oldest = $i;
+  my $count = 0;
+
+  my $use = sub {
+    my ($i, $spec) = @_;
+    push @{ $files[$i]{U} }, $spec;
+    $count++;
+  };
+
+  for (;;) {
+    $use->($i, $spec);
+
+    # find $j, the closest to $i, preferably no more than $dmax younger
+    my $j = $i;
+    for (;;) {
+      $j--;
+      # at each point in this loop $j is the next candidate
+      last if $j < 0;
+      my $dt = $files[$i]{A} - $files[$j]{A};
+      print DEBUG "j #$j $files[$j]{A} dt=$dt\n";
+      last if $dt > $dmax;
+    }
+    $j++;
+    if ($j == $i) {
+      $j--;
+      last if $j < 0;
+      print STDERR "insufficiently dense for $spec before $files[$j]{F}\n";
+    }
+    print DEBUG "i #$j\n";
+
+    $i = $j;
+  }
+
+  $i = $oldest;
+  while ($count < $n) {
+    for (;;) {
+      $i++;
+      if ($i > $#files) {
+	if (!$insufficiently_old) {
+	  print STDERR
+	    "insufficiently old for $spec (density compensation)\n";
+	}
+	return;
+      }
+      my $dt = $files[$i]{A} - $files[$oldest]{A};
+      print DEBUG "o #$i $files[$i]{A} dt=$dt\n";
+      last if $dt >= $dmin;
+    }
+    $use->($i, "$spec+");
+  }
+}
+
+sub do_rm ($) {
+  my ($fn) = @_;
+  if ($enable >= 2) {
+    my $r= system 'rm', ($recurse ? ('-r') : ()), "--", $fn;
+    die "run rm: $!\n" unless defined($r) && $r >= 0;
+    exit 4 if $r;
+  }
+}
+
+sub implement () {
+  foreach (reverse sort @oldfiles) {
+    printf "remove %s - old\n", $_;
+    do_rm($_);
+  }
+  foreach (reverse @files) {
+    next unless @{$_->{U}};
+    printf "keep %s for %s - age %.1f\n",
+      $_->{F}, "@{$_->{U}}", $_->{A};
+  }
+  foreach (reverse @files) {
+    next if @{$_->{U}};
+    printf "remove %s - age %.1f\n",
+      $_->{F}, $_->{A};
+    if ($enable >= 1) {
+      my $tmp = "$_->{F}.rm";
+      rename $_->{F}, $tmp or die "rename $_->{F} to $tmp: $!\n";
+      do_rm($tmp);
+    }
+  }
+}
+
+open DEBUG, ">/dev/null" or die $!;
+
+while (@ARGV && $ARGV[0] =~ m/^-/) {
+  $_ = shift @ARGV;
+  last if $_ eq '-' || $_ eq '--';
+  if (m/^-[^-]/) {
+    while (m/^-./) {
+      if (s/^-n/-/) { $enable=0; }
+      elsif (s/-r/-/) { $recurse=1; }
+      elsif (s/-D/-/) { $debug++; }
+      elsif (s/-u(\d+)$//) { $unit=$1; }
+      elsif (s/-s(\d+)$//) { $slop=$1; }
+      else { badusage "unknown short option $_" }
+    }
+  } elsif (m/^--rename-only$/) {
+    $enable=1;
+  } elsif (m/^--help$/) {
+    print $usage or die $!;
+    exit 0;
+  } else {
+    badusage "unknown long option $_"
+  }
+}
+
+badusage "too few arguments" unless @ARGV;
+
+if ($debug) {
+  open DEBUG, ">&STDERR" or die $!;
+  DEBUG->autoflush(1);
+}
+
+$slop //= $unit * 0.1;
+
+foreach (@ARGV) {
+  m/^(\d+)x(\d+)$/ or badusage "bad <number>x<interval> $_";
+  push @intervals, { Spec => $&, N => $1, D => $2 };
+}
+
+scan();
+precomp();
+foreach (@intervals) { flag $_ }
+implement();

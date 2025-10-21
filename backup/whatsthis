@@ -1,0 +1,143 @@
+#!/usr/bin/perl
+# whatsthis
+# read an id off the tape and display it to the user
+
+# This file is part of chiark backup, a system for backing up GNU/Linux and
+# other UN*X-compatible machines, as used on chiark.greenend.org.uk.
+#
+# chiark backup is:
+#  Copyright (C) 1997-1998,2000-2001,2007
+#                     Ian Jackson <ian@chiark.greenend.org.uk>
+#  Copyright (C) 1999 Peter Maydell <pmaydell@chiark.greenend.org.uk>
+#
+# This is free software; you can redistribute it and/or modify it under the
+# terms of the GNU General Public License as published by the Free Software
+# Foundation; either version 3, or (at your option) any later version.
+#
+# This is distributed in the hope that it will be useful, but WITHOUT ANY
+# WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+# FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
+# details.
+#
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, consult the Free Software Foundation's
+# website at www.fsf.org, or the GNU Project website at www.gnu.org.
+
+# First rough hack; mostly just code nabbed from full. 
+# --list assumes the dump type was 'zafio', which is a bit bogus.
+
+# whatsthis   : no args => just print tapeid
+# whatsthis --list [n] : print tapeid then list archive n (if n omitted,
+# 0 is assumed.) Note that archives are numbered from zero!
+
+sub rewind();
+sub stopandsay(@);
+
+$etc='/etc/chiark-backup';
+require "$etc/settings.pl";
+require 'backuplib.pl';
+
+$| = 1;
+
+# This isn't intended to be run automatically, so don't bother 
+# with setting status.
+
+# If we are run with the argument --list then list the backup to 
+# stdout. Otherwise just print the tape ID.
+$listing = 0;  # default : don't list
+$listing = 1 if ($ARGV[0] eq '--list');
+$listarchive = 0;
+$listarchive = $ARGV[1] if defined $ARGV[1];
+
+print "Trying to read tape ID from currently inserted tape...\n";
+
+unlink 'TAPEID';
+system "mt -f $ntape setblk $blocksizebytes"; $? and die $?;
+system "dd if=$ntape bs=${blocksize}b count=10 | tar -b$blocksize -vvxf - TAPEID";
+$? and stopandsay "Failed to read TAPEID.\n";
+
+if (!open(T, "TAPEID"))
+{
+  stopandsay "Tape has no ID label.\n";
+}
+
+# OK, there's a TAPEID file, read the ID and check for sanity.
+chomp($tapeid= <T>);
+if ($tapeid =~ m/[^0-9a-zA-Z]/)
+{
+   stopandsay "Tape has a bad (non-alphanumeric) TAPEID ($&).\n";
+}
+elsif (! $tapeid =~ m/[0-9a-zA-Z]/)
+{
+   stopandsay "Empty TAPEID.\n";
+}
+
+print "TAPEID is $tapeid.\n";
+close T;
+
+# If we aren't listing the tape contents, we can just rewind the tape
+# and exit.
+if (!$listing)
+{
+   rewind();
+   exit;
+}
+
+# List the contents of archive $listarchive on the tape.
+# We are already at the right place for the first archive
+# (after the TAPEID). 
+# For any other archive, we skip forwards to the start of that archive.
+if ($listarchive)
+{
+   system "mt -f $ntape fsf $listarchive";
+   $? and stopandsay "Couldn't skip forward to archive $listarchive.";
+}
+
+# Use file to figure out what the archive type is
+# This doesn't seem to work too well, so I'm disabling it -- PMM 
+#$ftype = `dd if=$ntape ibs=$blocksizebytes | file -`;
+#$? and stopandsay "couldn't determine file type: $?";
+$ftype = 'POSIX tar';
+
+# What we want to do here is roughly:
+# dd if=$ntape ibs=$blocksizebytes | readbuffer | afio ???
+#
+# where the afio options are such as to list an archive created with
+# afio -b $softblocksizebytes -Zvo
+
+if ($ftype =~ /POSIX tar/) {
+   # POSIX tar archive; we read it with cpio
+   $reader = "cpio -it -C$softblocksizebytes -Hustar";
+} elsif ($ftype =~ /ASCII cpio/) {
+   $reader = "afio -b $softblocksizebytes -Zt -";
+} elsif ($ftype =~ /dump file/) {
+   stopandsay "sorry: can't list dump files yet";
+} else {
+   stopandsay "listing failed: unknown archive type";
+}
+
+# Now back up so we can read the file again properly
+#system "mt -f $ntape bsf 1"; $? and stopandsay "couldn't backspace tape: $?";
+
+system "dd if=$ntape ibs=$blocksizebytes | readbuffer | $reader";
+$? and stopandsay "listing failed: $?";
+
+# All's well, stop here.
+print "Listing complete.\n";
+rewind();
+exit;
+
+
+# Rewind the tape.
+sub rewind ()
+{
+   system "mt -f $tape rewind"; $? and die $?;
+}
+
+# Print the given message, rewind the tape and exit failure.
+sub stopandsay(@)
+{
+   print @_;
+   rewind();
+   exit(1);
+}

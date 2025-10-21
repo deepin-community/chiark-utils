@@ -1,0 +1,157 @@
+.TH SUMMER "1" "December 2006" "Debian" "Chiark-utils-bin"
+.SH NAME
+summer \- print checksum and system metainformation for files
+.SH SYNOPSIS
+.B summer -ACDbfqtx
+.RI [\| startpoint ...]
+.br
+.SH DESCRIPTION
+.B summer
+prints the MD5 checksum of the contents, and the system
+metainformation (ownership, permissions, timestamps, etc.), for a
+file, or recursively for a whole directory tree.
+
+Each command line argument should be a file or directory to be processed;
+if it is a directory then it will be processed and then its contents will
+also be processed, recursively. If no
+.IR startpoint s
+are specified on the command line then
+.B summer
+will read a list of newline-separated startpoints from standard input.
+
+Since
+.B summer
+correctly handles devices, FIFOs and other non-regular files it is useful
+for generating and comparing summaries of arbitrary directory trees where
+md5sum alone would not be.
+.SH OUTPUT FORMAT
+.B summer
+prints one line of information for each filesystem object it processes.
+Each line has the following columns:
+.TS
+tab (@);
+l l.
+@MD5 checksum (in hex) or file type information
+@Size of file in bytes
+@File access rights (in octal)
+@User ID of owner (in decimal)
+@Group ID of owner (in decimal)
+@atime (time of last access, decimal time_t)
+@mtime (time of last modification)
+@ctime (time of last status change)
+@Filename
+.TE
+
+For regular files, the first column is the md5sum. For directories, pipes,
+symlinks and sockets it is the literal string \fBdir\fR, \fBmountpoint\fR, \fBpipe\fR, \fBsymlink\fR or \fBsocket\fR
+as appropriate. For devices it begins with \fBc\fR for character or \fBb\fR for block
+devices, followed by the device number as a single 32 bit hex number and as
+four separate 8 bit decimal numbers (most significant first).
+
+Note that any bytes in the filename other than printing 7-bit ASCII
+are escaped using
+.B \\\x\c
+.I NN
+syntax, where
+.I NN
+are two hex digits; backslashes are also escaped in this way.
+This makes the output unambiguous.  Filenames will be relative
+if the relevant
+.I startpoint
+was relative, and absolute if it was absolute.
+
+For symlinks the filename column is followed by `\fB -> \fR' (note the
+spaces) and the target of the link, again escaped, as above.
+.SH OPTIONS
+.TP
+.B \-A
+Do not print the atime (time of last access). The atime column will be omitted.
+.TP
+.B \-C
+Do not print the ctime (time of last status change). The ctime column will be omitted.
+.TP
+.B \-M
+Do not print the mtime (time of last modification). The mtime column will be omitted.
+.TP
+.B \-D
+Do not print directory sizes. The size column for directories will read \fBdir\fR.
+.TP
+.B \-b
+Do not print mtime (time of last modification) for symbolic links. The mtime field
+for symbolic links will read \fBlink\fR.
+.TP
+.B \-B
+Do not print any times for special files, symlinks,
+sockets, or fifos.  The atime, mtime and ctime fields
+for these objects will read
+.BR char ", " block ", " link  ", " sock " or " pipe
+instead.
+.TP
+.B \-f
+Include information about errors encountered (for example, unreadable files)
+in the output, and continue processing. The default is to print error information
+to standard error and stop immediately an error is encountered.
+.TP
+.B \-x
+Do not cross mountpoints while recursing into subdirectories.  
+Startpoints which are mountpoints \fIare\fR descended into.
+.TP
+.B \-q
+Suppress the progress information which
+.B summer
+normally prints to standard error.
+.TP
+.B \-t
+Set the field separator between the information and the filename to a
+tab character (default is space).
+.TP
+.B \-f
+Normally any errors (problems accessing files including nonexistent
+startpoings, and the like) are fatal; an error message is reported to
+stderr.
+
+With
+.B -f
+errors are nonfatal and the problems are reported inline.  The
+filesystem object with the problem is reported in the normal way
+except that instead of the checksum, the string
+\fB\\[\fR\fIproblem\fR[\fB:\fR\ \fIdetails\fR]\fB]\fR
+appears.  Fields whose value could not be determined are printed
+as \fB?\fR.
+.TP
+.B \-h
+Print a brief usage message to stderr (and do nothing else, exiting nonzero).
+.SH PARSING THE OUTPUT
+If the first character in the line is \fB\\[\fR, then the first
+(checksum or type) field is everything until the first subsequent
+\fB]\fR; this may be of variable length and will be followed by one or
+more spaces.  Otherwise the first field has a fixed width: 64
+characters, the size of an MD5 checksum represented in hex, and is
+followed by a single space.
+
+The metadata fields are space-separated but are also space-padded to a
+minimum width: 10 characters for sizes and times and ids; 4 characters
+for the mode.
+
+The filename field, and optional link target information, are of
+variable length, but they are escaped so that they do not contain
+spaces.
+.SH AUTHOR
+.B summer
+is
+.br
+Copyright (C) 2003-2007 Ian Jackson <ian@chiark.greenend.org.uk>
+
+This manpage was written by Peter Maydell
+and subsequently improved by Ian Jackson.  It is
+.br
+Copyright (C) 2006 Peter Maydell <pmaydell@chiark.greenend.org.uk>
+.br
+Copyright (C) 2007 Ian Jackson <ian@chiark.greenend.org.uk>
+
+This is free software, distributed under the GNU General Public
+Licence, version 3 or (at your option) any later version; see
+/usr/share/doc/chiark-utils-bin/copyright or
+/usr/share/common-licenses/GPL-3
+for copying conditions.  There is NO
+warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.

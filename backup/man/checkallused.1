@@ -1,0 +1,33 @@
+.TH BACKUP-CHECKALLUSED "1" "July 2003" "Debian" "Chiark-backup"
+.SH NAME
+backup-checkallused \- check chiark-backup configuration
+.SH SYNOPSIS
+.B backup-checkallused 
+.br
+.SH DESCRIPTION
+`backup-checkallused' does a check of the configuration
+files.  It should give a cryptic summary of the configuration and
+print 'configuration ok'. If not, fix your config files :->
+You have to create the file 
+.br
+/var/lib/chiark-backup/last-tape
+containing the id of a tape; this helps backup-checkallused know where
+to start iterating over tapes.  Any tapeid will do.  (But don't make
+it the same as the one you want to back up to first.)
+.SH OPTIONS
+None
+.SH FILES
+.TP
+.I /etc/chiark-backup/settings.pl
+Configuration file for the whole of chiark-backup
+.P
+.SH AUTHOR
+This Manual page was written by Matthew Vernon <matthew@debian.org> but 
+may be used by anyone.
+.SH COPYRIGHT
+Copyright (C) 1997-1998,2000-2001 Ian Jackson <ian@chiark.greenend.org.uk>
+.br
+Copyright (C) 1999 Peter Maydell <pmaydell@chiark.greenend.org.uk>
+.br
+This is free software; see the source for copying conditions.  There is NO
+warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.

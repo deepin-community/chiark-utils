@@ -1,0 +1,182 @@
+#!/usr/bin/perl
+# checkallused
+# check that the configuration is sane and backs up everything it should
+#
+# This file is part of chiark backup, a system for backing up GNU/Linux and
+# other UN*X-compatible machines, as used on chiark.greenend.org.uk.
+#
+# chiark backup is:
+#  Copyright (C) 1997-1998,2000-2001,2007
+#                     Ian Jackson <ian@chiark.greenend.org.uk>
+#  Copyright (C) 1999 Peter Maydell <pmaydell@chiark.greenend.org.uk>
+#
+# This is free software; you can redistribute it and/or modify it under the
+# terms of the GNU General Public License as published by the Free Software
+# Foundation; either version 3, or (at your option) any later version.
+#
+# This is distributed in the hope that it will be useful, but WITHOUT ANY
+# WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+# FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
+# details.
+#
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, consult the Free Software Foundation's
+# website at www.fsf.org, or the GNU Project website at www.gnu.org.
+
+# All filesystems must either be backed up in both full and
+# incremental dumps or listed as exceptions.
+
+BEGIN {
+    $etc= '/etc/chiark-backup';
+    require "$etc/settings.pl";
+    require 'backuplib.pl';
+}
+
+$|=1;
+
+open X,'last-tape' or die $!;
+chomp($tape= <X>);
+close X or die $!;
+
+while (!defined $tapedone{$tape}) {
+    open X,"$etc/tape.$tape" or die "$tape $!";
+    $fsg=''; $next='';
+    for (;;) {
+	$_= <X> or die $1; chomp; s/\s*$//;
+	last if m/^end$/;
+	next unless m/\S/;
+	next if m/^\#/;
+	if (m/^filesystems (\w+)$/) { $fsg= $1; }
+        elsif (m/^next (\w+)$/) { $next=$1; }
+	else { die "$tape $_ ?"; }
+    }
+    length $fsg or die "$tape $!";
+    length $next or die "$tape $!";
+    push @{$fsgdone{$fsg}}, $tape;
+    $tapedone{$tape}=1;
+    $tape= $next;
+}
+
+sub checkdevspec ($$$) {
+    my ($atf,$devspec,$why) = @_;
+    push @{ $devspec{$atf}{$devspec} }, $why;
+}
+
+for $fsg (sort keys %fsgdone) {
+    print "filesystem group $fsg: ".join(' ',@{$fsgdone{$fsg}}).":\n ";
+    @fsys= ();
+    readfsys($fsg);
+    for $tf (@fsys) {
+	parsefsys();
+	$pstr= "$pcstr$atf";
+	&e("dumped twice ($backed{$pstr}, $fsg): $pstr")
+	    if defined $backed{$pstr};
+	$backed{$pstr}= $fsg;
+	checkdevspec($pstr,"$pcstr$dev","filesystem group $fsg")
+	    if length $dev;
+	print " $pstr";
+    }
+    print "\n";
+}
+
+print "incremental group:\n ";
+@fsys= ();
+readfsys('all');
+for $tf (@fsys) {
+    parsefsys();
+    $pstr= "$pcstr$atf";
+    $incrd{$pstr}= $fsg;
+    checkdevspec($pstr,"$pcstr$dev","incremental group") if length $dev;
+    print " $pstr";
+}
+print "\n";
+
+for $pfx ('', sort keys %prefix) {
+    $rstr= length($pfx) ? $prefix{$pfx}.' ' : '';
+    $dfstr= exists($prefixdf{$pfx}) ? $prefixdf{$pfx} :
+	'df -P --no-sync -xiso9660 -xnfs -xproc -xtmpfs';
+    $cmd= "$rstr $dfstr";
+    open X, "$cmd |" or die $!;
+    $_= <X>; m/^Filesystem/ or die "$cmd => $_ ?";
+    $prefix= length($pfx) ? $pfx : '<local>';
+    $pcstr= length($pfx) ? "$pfx:" : '';
+    print "mount points: $prefix:";
+    while (<X>) {
+	chomp;
+	next if m,^procfs\s,;
+	m,^/dev/(\S+)\s.*\s(/\S*)\s*$, or die "$_ ?";
+	($dev,$mp) = ($1,$2);
+	checkdevspec("$pcstr$mp","$pcstr/dev/$dev","df");
+	$mounted{"$pcstr$mp"}="$pcstr$dev"; print " $1-$2";
+	if (defined($backto= $backed{"$pcstr$mp"})) {
+	    if (m,^/dev/\S+\s+\d+\s+(\d+)\s,) {
+		$usedkb{$backto} += $1;
+		$countedkb{"$pcstr$mp"}++;
+	    }
+	}
+    }
+    print "\n";
+    $!=0; close(X); $? and die "$? $!";
+}
+
+foreach $fsg (keys %usedkb) {
+    print "filesystem group $fsg: $usedkb{$fsg} 1K-blocks raw accounted\n";
+}
+
+foreach $fsg (keys %backed) {
+    next if $countedkb{$fsg};
+    print "unaccounted filesystem: $fsg\n";
+}
+
+foreach $dsk (keys %devspec) {
+    if (keys %{ $devspec{$dsk} } != 1) {
+	foreach $devspec (keys %{ $devspec{$dsk} }) {
+	    &e("inconsistent devices for $dsk: $devspec (".
+               join(', ', @{ $devspec{$dsk}{$devspec} }).")");
+	}
+    }
+}
+
+# We check that all mounted filesystems are dumped and all
+# filesystems to be dumped are mounted. The expected-diffs
+# config file allows us to make exceptions.
+# eg: 
+# #expect disk2 to be mounted but not dumped
+# !/disk2
+# # CD may or may not be mounted but should not be dumped in either case
+# ?/cdrom
+
+open Z,"$etc/expected-diffs" or die $!;
+for (;;) {
+    $_= <Z> or die; chomp; s/\s*$//;
+    last if m/^end$/;
+    next unless m/^\S/;
+    next if m/^\#/;
+    if (s/^\?//) {
+        print "non-permanent filesystem expected not to be dumped: $_\n";
+        if (defined($mounted{$_})) {
+            delete $mounted{$_};
+        }
+    } elsif (s/^\!//) {
+	&e("expected not to be dumped, but not a mount point: $_")
+	    unless defined($mounted{$_});
+        print "filesystem expected not to be dumped: $_\n";
+        delete $mounted{$_};
+    } else {
+	&e("non-filesystem expected to be dumped is mounted: $_ on $mounted{$_}")
+	    if defined($mounted{$_});
+        $mounted{$_}= 'expected-diffs';
+        print "non-filesystem expected to be dumped: $_\n";
+    }
+}
+    
+for $fs (sort keys %backed) { length($mounted{$fs}) || &e("dumped ($backed{$fs}), not a mount point: $fs"); }
+for $fs (sort keys %incrd) { length($mounted{$fs}) || &e("increm'd ($incrd{$fs}), not a mount point: $fs"); }
+for $fs (sort keys %mounted) { length($backed{$fs}) || &e("mount point ($mounted{$fs}), not dumped: $fs"); }
+for $fs (sort keys %mounted) { length($incrd{$fs}) || &e("mount point ($mounted{$fs}), not increm'd: $fs"); }
+
+$emsg.= "configuration ok\n" unless $e;
+print STDERR $emsg;
+exit($e);
+
+sub e { $emsg.="** @_\n"; $e=1; }

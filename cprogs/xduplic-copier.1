@@ -1,0 +1,79 @@
+.TH WITH-LOCK-EX "1" "July 2003" "Debian" "Chiark-utils-bin"
+.SH NAME
+xduplic-copier \- type into multiple X windows at once
+.SH SYNOPSIS
+.B xduplic-copier
+.SH DESCRIPTION
+xduplic-copier lets you type into multiple X windows at once.
+
+It has a very basic user interface for selecting which windows to type
+into.
+.SH OPTIONS
+xduplic-copier ignores its command-line arguments.
+.SH MODES
+xduplic-copier puts up a small window with some text in it.  It has
+two modes:
+.TP
+Idle: "\fBi 0\fR" (red); Typing "\fBT\fR \fIcount\fR" (green)
+If you type keystrokes into xduplic-copier, they will be replicated to
+all the selected windows (if there are any).  (You can also type into
+the selected windows individually in the normal way.)
+count is the number of selected windows.
+The starting mode is Idle; you should left-click to start selecting.
+.TP
+Selecting: "\fBS\fR \fIcount\fR" (white)
+In this mode xduplic-copier has grabbed the mouse pointer and you
+can indicate which windows you are going to want to type into.
+.SH MOUSE ACTIONS
+.TP
+Left-click in xduplic-copier
+Switch between typing and selecting modes.
+.TP
+Right-click in xduplic-copier
+Quit.
+.TP
+Left-click in another window while selecting
+Select this window.  (Beeps if already selected.)
+.TP
+Right-click in another window while selecting
+Deselect this window.  (Beeps if not selected.)
+.TP
+Right-click in root window (ie, desktop background) while selecting
+Deselect all windows.
+.TP
+Q key while selecting
+Quits.
+.SH XTERM AND ALLOW SENDEVENTS
+xduplic-copier does its work by generating synthetic events for the
+selected windows, using XSendEvent.  Unfortunately the xterm authors
+think that allowing XSendEvent is a security problem; they are wrong:
+any untrusted person can already take over your xterms anyway.  But
+the xterm authors have configured xterm to discard synthetic events by
+default.
+
+You can solve this at runtime by bringing up the ctrl-leftbutton menu in
+each xterm, and ticking the option "Allow SendEvents".  Or you can set
+the allowSendEvents in your xterm X resources.
+
+Neither of these significantly reduce your security.  Indeed, xterm
+itself allows these properties to be set via the X toolkit system's
+remote widget property setting arrangements - so it would be possible
+for xduplic-copier to set this property itself on any xterms it
+encountered.  Unfortunately doing so would be a lot of tedious
+programming.
+.SH BUGS
+If one of the windows you have selected is closed, and you try typing,
+xduplic-copier will crash due to an unhandled X11 error.  If you
+notice that you have got into this state, you cannot retain your set
+of selected windows because there is no way to click on the
+now-destroyed window to deselect it.  You can keep xduplic-copier from
+crashing by right-clicking on the background in selecting mode, and
+then reselecting all your windows, which may be marginally more
+convenient than restarting it.
+
+The UI is perhaps excessively sparse.
+.SH AUTHOR AND COPYRIGHT
+Ian Jackson <ijackson@chiark.greenend.org.uk> wrote xduplic-copier
+some time in 2002, and updated it in 2013. The manpage is from 2013.
+
+xduplic-copier is govered by the GNU GPL, v3 or later.

@@ -1,0 +1,28 @@
+.TH readbuffer 1 2001-10-21 chiark-backup
+.SH NAME
+readbuffer \- read input from devices which don't like constant stopping and starting
+.SH SYNOPSIS
+.B readbuffer
+.RB [ --mlock ]
+.RI [ size ]
+.SH DESCRIPTION
+.B readbuffer
+reads data on standard input and writes it to standard output.  It
+will internally buffer up to \fIsize\fR megabytes of data, and will
+only read more data when the buffer is at least 75% empty.
+.PP
+\fIsize\fR may also be suffixed with
+.BR m ", " k ", or " b
+to indicate that it is in megabytes (2^20), kilobytes (2^10) or bytes.
+.PP
+It is intended for use in situations where many small
+reads are undesirable for performance reasons, e.g. tape drives.
+.SH OPTIONS
+.TP
+.B --mlock
+Calls
+.BR mlock (2)
+to lock the buffer into memory.
+.SH "SEE ALSO"
+.BR writebuffer (1),
+.BR mlock (2)

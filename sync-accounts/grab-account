@@ -1,0 +1,64 @@
+#!/bin/sh
+# This is part of sync-accounts, a tool for synchronising UN*X password data.
+#
+# sync-accounts is
+#  Copyright 1999-2000,2002 Ian Jackson <ian@davenant.greenend.org.uk>
+#  Copyright 2000-2001 nCipher Corporation Ltd
+#
+#  sync-accounts is free software; you can redistribute it and/or
+#  modify it under the terms of the GNU General Public License as
+#  published by the Free Software Foundation; either version 3, or (at
+#  your option) any later version.
+#
+#  sync-accounts is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+#  General Public License for more details.
+#
+#  You should already have a copy of the GNU General Public License.
+#  If not, consult the Free Software Foundation's website at
+#  www.fsf.org, or the GNU Project website at www.gnu.org.
+#
+# $Id: grab-account,v 1.5 2007-09-21 21:21:15 ianmdlvl Exp $
+
+set -e
+
+if [ $# -lt 2 -o $# -gt 3 ]
+then
+	echo >&2 \
+'usage: grab-account <localuser> <shorthostname> [<remoteuser>]
+creates an entry in /etc/sync-accounts, and runs sync-accounts
+$Id: grab-account,v 1.5 2007-09-21 21:21:15 ianmdlvl Exp $'
+	exit 1
+fi
+
+lu="$1"
+sh="$2"
+
+if [ $# -gt 2 ]
+then
+	ru="$3"
+else
+	ru="$1"
+fi
+
+cf=/etc/sync-accounts
+
+if perl -ne 'exit 1 if m/^\s*user\s+'$lu'\s/;' <$cf
+then
+	perl -pe '
+		next unless m/^\s*host\s+'$sh'\s*$/...m/^host|^end/;
+		next unless m/^\s*addhere\s*$/;
+		next if $done++;
+		print "user '$lu'".("'$lu'" eq "'$ru'" ? "" : " remote='$ru'")."\n"
+			or die $!;
+	 END {
+		print(STDERR "\`addhere'\'' line not found\n"), $?=1 if !$? && !$done;
+	 }
+		' $cf >$cf.new
+	mv -f $cf.new $cf
+else
+	echo "entry already exists in $cf, leaving alone"
+fi
+
+sync-accounts $sh

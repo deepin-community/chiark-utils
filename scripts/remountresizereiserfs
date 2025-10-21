@@ -1,0 +1,57 @@
+#!/bin/bash
+# usage:
+#   remountresizereiserfs /mountpoint
+
+set -e
+fail () { echo >&2 "$*"; exit 1; }
+case "$#.$1" in 1.[^-]*);; *) fail 'bad usage';; esac
+
+mp=$1
+
+df=`df -P $mp`
+dfl2=`printf "%s" "$df" | sed 1d`
+
+case "$dfl2" in
+/dev/*" "[0-9]*" "[0-9]*" "[0-9]*" "[0-9]*"% "/*)
+	dev=${dfl2%% *}
+	mp2=${dfl2##* }
+	if [ "x$mp2" != "x$mp" ]; then fail "mountpoint is $mp2 not $mp"; fi
+	;;
+*)	fail "could not parse df output" ;;
+esac
+
+dm=/dev/mapper
+case "$dev" in
+$dm/*/*)
+	fail "too many path segments in mapper device \`$dev'"
+	;;
+$dm/*)
+	lv=${dev#$dm/}
+	lv=${lv//--//}
+	case "$lv" in
+	*-*)	;;
+	*)	fail "no single hyphen in mapper device \`$lv'";;
+	esac
+	vg=${lv%%-*}
+	lv=${lv#*-}
+	vg=${vg//\//-}
+	lv=${lv//\//-}
+	devu=/dev/$vg/$lv
+	;;
+*)
+	devu=$dev
+esac
+
+lvi=$(lvdisplay -c $devu)
+vg=${lvi#*:}
+vg=${vg%%:*}
+vgsz_kb=${lvi#*:*:*:*:*:*:}
+vgsz_kb=${vgsz_kb%%:*}
+
+dbrfs=$(debugreiserfs $dev)
+blksz_by=$(printf "%s" "$dbrfs" | egrep '^Blocksize: ' || fail "blocksize?")
+blksz_by=${blksz_by#*: }
+
+vgsz_blk=$(dc -e "$vgsz_kb 1024* $blksz_by /p")
+
+echo mount -o remount,resize=$vgsz_blk $mp
