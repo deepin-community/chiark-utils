@@ -1,0 +1,42 @@
+From f523314f7ebe9309b07e49a2af09eee515b77d25 Mon Sep 17 00:00:00 2001
+From: hudeng <hudeng@deepin.org>
+Date: Tue, 21 Oct 2025 17:31:05 +0800
+Subject: [PATCH] feat: deepin add sw64 support
+
+---
+ cprogs/acctdump.c | 12 +++++++++++-
+ 1 file changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/cprogs/acctdump.c b/cprogs/acctdump.c
+index b9040ac..5bc7bc4 100644
+--- a/cprogs/acctdump.c
++++ b/cprogs/acctdump.c
+@@ -36,7 +36,7 @@ typedef unsigned long long u64;
+ 
+ /* Sadly this thing is not very portable */
+ 
+-#if defined(__linux__)
++#if defined(__linux__) && !defined(__sw_64__)
+ 
+ #include <sys/types.h>
+ #include <sys/acct.h>
+@@ -46,6 +46,16 @@ typedef struct acct_v3 struct_acct;
+ #define HAVE_AC_FLT
+ #define FIELD_AC_FLAG(as) ((as)->ac_flag)
+ 
++#elif defined(__sw_64__) || (defined(__linux__) && defined(__sw_64__))
++
++#include <sys/types.h>
++#include <sys/acct.h>
++
++typedef struct acct struct_acct;
++#define HAVE_AC_EXITCODE
++#define HAVE_AC_FLT
++#define FIELD_AC_FLAG(as) ((as)->ac_flag)
++
+ #elif defined(__FreeBSD__) || defined(__FreeBSD_kernel__)
+ 
+ #include <sys/param.h>
+-- 
+2.50.1
+
